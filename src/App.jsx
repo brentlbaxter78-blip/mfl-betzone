@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 const SUPA_URL = "https://nuiffniijnbzzkvxxtle.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51aWZmbmlpam5ienprdnh4dGxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDA5MzgsImV4cCI6MjA5NzkxNjkzOH0.dlKFKRYwZIU_GefbPV7aDhOab5B7jGByVTAAV3uQ8C8";
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
+// ↓ Get a FREE key at the-odds-api.com (500 req/month, no credit card)
+const ODDS_API_KEY = ""; // paste your key between the quotes
 
 const sb = async (path, opts = {}) => {
   const { method = "GET", body, prefer = "return=representation" } = opts;
@@ -73,30 +75,113 @@ const STR = {
   "Cuba":860,"Haiti":870,
 };
 
-// Fix ESPN team names to match our data
-const ESPN_NAME = {
+// Name normalization — handles both ESPN API and The Odds API naming
+const NAME_MAP = {
   "United States":"USA","Korea Republic":"South Korea","Côte d'Ivoire":"Ivory Coast",
   "DR Congo":"Congo","Czech Republic":"Czechia","Bosnia and Herzegovina":"Bosnia",
-  "Trinidad and Tobago":"Trinidad","New Zealand":"New Zealand",
-  "Saudi Arabia":"Saudi Arabia","Costa Rica":"Costa Rica",
-  "United Arab Emirates":"UAE","China PR":"China","IR Iran":"Iran",
+  "Trinidad and Tobago":"Trinidad","United Arab Emirates":"UAE","China PR":"China",
+  "IR Iran":"Iran","Republic of Ireland":"Ireland","North Korea":"North Korea",
+  "Central African Republic":"CAR","São Tomé and Príncipe":"Sao Tome",
+  "Equatorial Guinea":"Eq. Guinea","Papua New Guinea":"PNG",
 };
-const normName = n => ESPN_NAME[n] || n;
+const normName = n => NAME_MAP[n] || n;
 
-const FLAGS = {
-  "Argentina":"🇦🇷","France":"🇫🇷","Brazil":"🇧🇷","England":"🏴󠁧󠁢󠁥󠁮󠁧󠁿","Portugal":"🇵🇹",
-  "Spain":"🇪🇸","Belgium":"🇧🇪","Netherlands":"🇳🇱","Germany":"🇩🇪","Croatia":"🇭🇷",
-  "Uruguay":"🇺🇾","Italy":"🇮🇹","Switzerland":"🇨🇭","Colombia":"🇨🇴","USA":"🇺🇸",
-  "Mexico":"🇲🇽","Japan":"🇯🇵","Morocco":"🇲🇦","Senegal":"🇸🇳","Denmark":"🇩🇰",
-  "South Korea":"🇰🇷","Ecuador":"🇪🇨","Canada":"🇨🇦","Serbia":"🇷🇸","Ghana":"🇬🇭",
-  "Cameroon":"🇨🇲","Tunisia":"🇹🇳","Iran":"🇮🇷","Costa Rica":"🇨🇷","Saudi Arabia":"🇸🇦",
-  "Qatar":"🇶🇦","Australia":"🇦🇺","Poland":"🇵🇱","Nigeria":"🇳🇬","Algeria":"🇩🇿",
-  "Panama":"🇵🇦","Paraguay":"🇵🇾","Bolivia":"🇧🇴","Peru":"🇵🇪","Chile":"🇨🇱",
-  "Venezuela":"🇻🇪","Jamaica":"🇯🇲","Honduras":"🇭🇳","El Salvador":"🇸🇻",
-  "Ivory Coast":"🇨🇮","Congo":"🇨🇩","Czechia":"🇨🇿","Bosnia":"🇧🇦",
-  "Trinidad":"🇹🇹","UAE":"🇦🇪","China":"🇨🇳","Wales":"🏴󠁧󠁢󠁷󠁬󠁳󠁿","Scotland":"🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+// ── THE ODDS API (real live odds) ─────────────────────────────────────────────
+const fetchLiveOdds = async () => {
+  if (!ODDS_API_KEY) return null;
+  try {
+    const r = await fetch(
+      `https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`
+    );
+    if (!r.ok) return null;
+    const games = await r.json();
+    if (!Array.isArray(games) || !games.length) return null;
+    return games.map(g => {
+      // Use first available bookmaker
+      const bm = g.bookmakers?.[0];
+      const mkt = bm?.markets?.find(m => m.key === "h2h");
+      if (!mkt) return null;
+      const t1 = normName(g.home_team);
+      const t2 = normName(g.away_team);
+      const outs = mkt.outcomes || [];
+      const home  = outs.find(o => normName(o.name) === t1 || o.name === g.home_team);
+      const away  = outs.find(o => normName(o.name) === t2 || o.name === g.away_team);
+      const draw  = outs.find(o => o.name === "Draw");
+      const fb    = stableOdds(g.id, t1, t2);
+      const now   = new Date();
+      const start = new Date(g.commence_time);
+      const isLive = now >= start;
+      return {
+        id: g.id,
+        t1, t2,
+        dt: g.commence_time,
+        rnd: "FIFA World Cup 2026",
+        isLive,
+        o1:    home?.price  ?? fb.o1,
+        oDraw: draw?.price  ?? fb.oDraw,
+        o2:    away?.price  ?? fb.o2,
+      };
+    }).filter(Boolean);
+  } catch(e) {
+    console.warn("Odds API unavailable:", e.message);
+    return null;
+  }
 };
-const fl = t => FLAGS[t] || "⚽";
+
+// ── ESPN FALLBACK (game schedule + simulated odds) ────────────────────────────
+const fetchESPN = async () => {
+  try {
+    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
+    if (!r.ok) return null;
+    const d = await r.json();
+    // Show pre-game AND in-progress — odds visible 24/7, betting locks 3 min before
+    const evs = (d.events||[]).filter(e => ["pre","in"].includes(e.status?.type?.state));
+    if (!evs.length) return null;
+    return evs.slice(0,10).map(e => {
+      const cs = e.competitions?.[0]?.competitors||[];
+      const h  = cs.find(c=>c.homeAway==="home"), a = cs.find(c=>c.homeAway==="away");
+      const t1 = normName(h?.team?.displayName||"Home");
+      const t2 = normName(a?.team?.displayName||"Away");
+      const isLive = e.status?.type?.state === "in";
+      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, ...stableOdds(e.id,t1,t2) };
+    });
+  } catch { return null; }
+};
+
+// Master fetch: live odds API → ESPN fallback → hardcoded fallback
+const fetchWC = async () => {
+  const live = await fetchLiveOdds();
+  if (live?.length) return live;
+  const espn = await fetchESPN();
+  if (espn?.length) return espn;
+  return FB;
+};
+
+const CODES={
+  "Argentina":"ar","France":"fr","Brazil":"br","England":"gb-eng","Portugal":"pt",
+  "Spain":"es","Belgium":"be","Netherlands":"nl","Germany":"de","Croatia":"hr",
+  "Uruguay":"uy","Italy":"it","Switzerland":"ch","Colombia":"co","USA":"us",
+  "Mexico":"mx","Japan":"jp","Morocco":"ma","Senegal":"sn","Denmark":"dk",
+  "South Korea":"kr","Ecuador":"ec","Canada":"ca","Serbia":"rs","Ghana":"gh",
+  "Cameroon":"cm","Tunisia":"tn","Iran":"ir","Costa Rica":"cr","Saudi Arabia":"sa",
+  "Qatar":"qa","Australia":"au","Poland":"pl","Nigeria":"ng","Algeria":"dz",
+  "Panama":"pa","Paraguay":"py","Bolivia":"bo","Peru":"pe","Chile":"cl",
+  "Venezuela":"ve","Jamaica":"jm","Honduras":"hn","El Salvador":"sv","Cuba":"cu",
+  "Haiti":"ht","Wales":"gb-wls","Scotland":"gb-sct","New Zealand":"nz","UAE":"ae",
+  "China":"cn","Ivory Coast":"ci","Congo":"cd","Czechia":"cz","Bosnia":"ba",
+  "Trinidad":"tt","Ireland":"ie","Ukraine":"ua","Turkey":"tr","Romania":"ro",
+  "Greece":"gr","Hungary":"hu","Slovakia":"sk","Slovenia":"si","Georgia":"ge",
+  "Albania":"al","Finland":"fi","Norway":"no","Sweden":"se","Austria":"at",
+};
+// Flag renders a real image from flagcdn.com — works on ALL platforms including Windows
+function Flag({team,size=24}){
+  const [err,setErr]=useState(false);
+  if(team==="Draw")return<span style={{fontSize:size,lineHeight:1}}>⚖️</span>;
+  const code=CODES[team];
+  if(!code||err)return<span style={{fontSize:size*0.8,lineHeight:1}}>⚽</span>;
+  return<img src={`https://flagcdn.com/w40/${code}.png`} alt={team} width={Math.round(size*1.45)} height={size} style={{objectFit:"cover",borderRadius:2,display:"inline-block",verticalAlign:"middle"}} onError={()=>setErr(true)}/>;
+}
+const fl=t=>t==="Draw"?"⚖️ Draw":t; // text-only fallback for non-visual contexts
 
 const FB = [
   {id:"f1",t1:"Argentina",  t2:"Croatia",    dt:"2026-06-26T19:00:00",rnd:"Group Stage · C"},
@@ -137,7 +222,7 @@ const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"America/New_York"});
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
-const betLabel = t => t==="Draw"?`⚖️ Draw`:`${fl(t)} ${t}`;
+const betLabel = t => t==="Draw"?"⚖️ Draw":t;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
 
 const TERMS = [
@@ -156,14 +241,32 @@ export default function App(){
   const refreshWC=useCallback(async()=>{const g=await fetchWC();setWc(g);setWcLoading(false);},[]);
   useEffect(()=>{refreshWC();},[refreshWC]);
   useEffect(()=>{
-    const iv=setInterval(()=>{if(!document.hidden)refreshWC();},5*60*1000); // every 5 min
-    const h=()=>{if(!document.hidden)refreshWC();};
+    const iv=setInterval(()=>{if(!document.hidden)refreshWC();},2*60*1000); // refresh every 2 min
+    const h=()=>{if(!document.hidden)refreshWC();}; // also refresh the moment tab is focused
     document.addEventListener("visibilitychange",h);
     return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
   },[refreshWC]);
-  useEffect(()=>{try{const s=sessionStorage.getItem("mfl_s");if(s)setSession(JSON.parse(s));}catch(e){}},[]); 
-  const login=s=>{setSession(s);try{sessionStorage.setItem("mfl_s",JSON.stringify(s));}catch(e){}};
-  const logout=()=>{setSession(null);try{sessionStorage.removeItem("mfl_s");}catch(e){}};
+  // On load: check localStorage first (remember me), then sessionStorage (this tab only)
+  useEffect(()=>{
+    try{
+      const ls=localStorage.getItem("mfl_s");
+      const ss=sessionStorage.getItem("mfl_s");
+      const saved=ls||ss;
+      if(saved)setSession(JSON.parse(saved));
+    }catch(e){}
+  },[]);
+  // remember=true → localStorage (persists), false → sessionStorage (tab only)
+  const login=(s,remember=false)=>{
+    setSession(s);
+    try{
+      if(remember){localStorage.setItem("mfl_s",JSON.stringify(s));sessionStorage.removeItem("mfl_s");}
+      else{sessionStorage.setItem("mfl_s",JSON.stringify(s));localStorage.removeItem("mfl_s");}
+    }catch(e){}
+  };
+  const logout=()=>{
+    setSession(null);
+    try{localStorage.removeItem("mfl_s");sessionStorage.removeItem("mfl_s");}catch(e){}
+  };
   if(!session)return<Login login={login} showToast={showToast} toast={toast}/>;
   return<Main session={session} logout={logout} showToast={showToast} toast={toast} wc={wc} wcLoading={wcLoading}/>;
 }
@@ -174,17 +277,18 @@ function Login({login,showToast,toast}){
   const [un,setUn]=useState(""),[pw,setPw]=useState(""),[cpw,setCpw]=useState("");
   const [tos,setTos]=useState(false),[showTos,setShowTos]=useState(false),[tosRead,setTosRead]=useState(false);
   const [busy,setBusy]=useState(false);
+  const [remember,setRemember]=useState(false);
   // No ref needed — scroll is tracked via event target
   const onTosScroll=e=>{const el=e.currentTarget;if(el.scrollHeight-el.scrollTop<=el.clientHeight+30)setTosRead(true);};
 
   const doLogin=async()=>{
     if(!un.trim()||!pw)return showToast("Enter your username and password","error");
-    if(un.trim().toLowerCase()===ADMIN_USER&&pw===ADMIN_PASS){login({userId:"admin",isAdmin:true});return;}
+    if(un.trim().toLowerCase()===ADMIN_USER&&pw===ADMIN_PASS){login({userId:"admin",isAdmin:true},remember);return;}
     setBusy(true);
     try{
       const rows=await db.findUser(un.trim());const user=rows?.[0];
       if(!user||user.password_hash!==mkHash(pw))return showToast("Wrong username or password","error");
-      login({userId:user.id,isAdmin:false});
+      login({userId:user.id,isAdmin:false},remember);
     }catch(e){showToast("Connection error — try again","error");}finally{setBusy(false);}
   };
 
@@ -202,7 +306,7 @@ function Login({login,showToast,toast}){
       await db.addUser({username:id,display_name:cap(id),password_hash:mkHash(pw),balance:0,cash_in:0,cash_out:0,privacy_public:true,is_admin:false});
       const rows=await db.findUser(id);const nu=rows?.[0];
       if(!nu)throw new Error("Created but couldn't retrieve");
-      showToast("Welcome to MFL Betzone! 🎉");login({userId:nu.id,isAdmin:false});
+      showToast("Welcome to MFL Betzone! 🎉");login({userId:nu.id,isAdmin:false},remember);
     }catch(e){
       const m=e.message?.includes("42501")||e.message?.includes("permission")
         ?"DB error — run mfl_setup.sql in Supabase"
@@ -279,6 +383,14 @@ function Login({login,showToast,toast}){
                   {" "}— including no refunds on placed bets
                 </div>
               </div>
+            </div>
+          )}
+          {mode==="login"&&(
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,cursor:"pointer"}} onClick={()=>setRemember(r=>!r)}>
+              <div style={{width:18,height:18,borderRadius:4,border:`2px solid ${remember?C.gold:C.border2}`,background:remember?C.gold:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s"}}>
+                {remember&&<span style={{fontSize:11,fontWeight:900,color:C.bg}}>✓</span>}
+              </div>
+              <span style={{fontSize:12,color:C.sub}}>Remember this device — stay logged in</span>
             </div>
           )}
           <button style={{...S.btn,width:"100%",padding:"15px",fontSize:14,opacity:busy?0.55:1}} onClick={mode==="login"?doLogin:doRegister} disabled={busy}>
@@ -453,7 +565,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
             <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"14px",marginBottom:14}}>
               <div style={{fontSize:10,color:C.dim,fontWeight:700,letterSpacing:"0.06em",marginBottom:6}}>FIFA WORLD CUP 2026</div>
               <div style={{fontSize:13,color:C.sub,marginBottom:8}}>{confirm.matchup}</div>
-              <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick: <strong style={{color:C.gold}}>{betLabel(confirm.team)}</strong> <span style={{color:C.dim,fontSize:12}}>({fmtO(confirm.odds)})</span></div>
+              <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick: <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:5}}><Flag team={confirm.team} size={16}/>{confirm.team}</strong> <span style={{color:C.dim,fontSize:12}}>({fmtO(confirm.odds)})</span></div>
               <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:`1px solid ${C.border}`}}>
                 <div style={{flex:1,padding:"10px",background:C.card,textAlign:"center"}}><div style={{fontSize:10,color:C.dim,marginBottom:2}}>STAKE</div><div style={{fontSize:17,fontWeight:800,color:C.text}}>₿{confirm.stake}</div></div>
                 <div style={{width:1,background:C.border}}/>
@@ -487,7 +599,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
               <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(user.balance||0).toFixed(2)}</div>
             </div>
           )}
-          {isAdmin&&<span style={{fontSize:11,fontWeight:700,color:"#E53935",background:"#1A000022",border:"1px solid #E5393533",borderRadius:8,padding:"5px 12px"}}>BRENT</span>}
+          {isAdmin&&(
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:11,fontWeight:700,color:"#E53935",background:"#1A000022",border:"1px solid #E5393533",borderRadius:8,padding:"5px 12px"}}>BRENT</span>
+              <button onClick={logout} style={{background:"none",border:`1px solid ${C.border}`,color:C.dim,borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:600,cursor:"pointer"}}>Sign Out</button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -496,9 +613,14 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
         {/* ── SOCCER / WORLD CUP ── */}
         {tab==="soccer"&&(
           <div>
-            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
-              <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block"}}/>
-              <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>FIFA WORLD CUP 2026 — LIVE ODDS</span>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
+                <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
+                  {ODDS_API_KEY?"LIVE ODDS — THE ODDS API":"ODDS — FIFA WORLD CUP 2026"}
+                </span>
+              </div>
+              <span style={{fontSize:10,color:C.dim}}>updates every 2 min</span>
             </div>
             {wcLoading?(
               <div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚽</div><div style={{fontSize:13}}>Loading odds…</div></div>
@@ -508,16 +630,27 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
+              const isLive=g.isLive||false;
               return(
-                <div key={g.id} style={{...S.card,marginBottom:12,opacity:closed?0.7:1}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-                    <div><div style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.05em"}}>FIFA WORLD CUP 2026</div><div style={{fontSize:10,color:C.dim,marginTop:1}}>{g.rnd}</div></div>
+                <div key={g.id} style={{...S.card,marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                        {isLive&&<span style={{fontSize:9,fontWeight:800,letterSpacing:"0.08em",background:"#E5393518",color:"#E53935",border:"1px solid #E5393533",borderRadius:4,padding:"2px 6px"}}>🔴 LIVE</span>}
+                        <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>FIFA WORLD CUP 2026</span>
+                      </div>
+                      <div style={{fontSize:10,color:C.dim}}>{g.rnd}</div>
+                    </div>
                     <div style={{fontSize:10,color:C.dim,textAlign:"right"}}>{fmtDt(g.dt)}</div>
                   </div>
-                  {closed&&<div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:12}}>🔒 Betting closed</div>}
+                  {closed&&(
+                    <div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10}}>
+                      {isLive?"⚽ Game in progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
+                    </div>
+                  )}
                   <div style={{display:"flex",gap:5}}>
                     <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
-                      <span style={{fontSize:20,lineHeight:1}}>{fl(g.t1)}</span>
+                      <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
                     </button>
@@ -527,7 +660,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                       <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(g.oDraw)}</span>
                     </button>
                     <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
-                      <span style={{fontSize:20,lineHeight:1}}>{fl(g.t2)}</span>
+                      <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
                     </button>
@@ -582,9 +715,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                   <SPill s={bet.status}/>
                 </div>
                 {bet.legs?.map((l,i)=>(
-                  <div key={i} style={{fontSize:13,color:C.sub,marginBottom:3}}>
-                    <span style={{color:C.dim}}>{l.matchup}</span> → <strong style={{color:C.gold}}>{betLabel(l.fighter)}</strong>
-                    <span style={{color:C.dim,marginLeft:4}}>({fmtO(l.odds)})</span>
+                  <div key={i} style={{fontSize:13,color:C.sub,marginBottom:3,display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                    <span style={{color:C.dim}}>{l.matchup}</span>
+                    <span style={{color:C.text}}>→</span>
+                    <Flag team={l.fighter} size={14}/>
+                    <strong style={{color:C.gold}}>{l.fighter}</strong>
+                    <span style={{color:C.dim}}>({fmtO(l.odds)})</span>
                   </div>
                 ))}
                 <div style={{display:"flex",gap:16,fontSize:12,color:C.dim,marginTop:10,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
