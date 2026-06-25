@@ -174,8 +174,8 @@ function Login({login,showToast,toast}){
   const [un,setUn]=useState(""),[pw,setPw]=useState(""),[cpw,setCpw]=useState("");
   const [tos,setTos]=useState(false),[showTos,setShowTos]=useState(false),[tosRead,setTosRead]=useState(false);
   const [busy,setBusy]=useState(false);
-  const tosRef=useRef?React.useRef(null):null;
-  const onTosScroll=e=>{const el=e.target;if(el.scrollHeight-el.scrollTop<=el.clientHeight+24)setTosRead(true);};
+  // No ref needed — scroll is tracked via event target
+  const onTosScroll=e=>{const el=e.currentTarget;if(el.scrollHeight-el.scrollTop<=el.clientHeight+30)setTosRead(true);};
 
   const doLogin=async()=>{
     if(!un.trim()||!pw)return showToast("Enter your username and password","error");
@@ -213,8 +213,6 @@ function Login({login,showToast,toast}){
     }finally{setBusy(false);}
   };
 
-  const tosRef2={current:null};
-  const [localTosRef]=useState(tosRef2);
 
   return(
     <div style={S.root}>
@@ -331,8 +329,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   const askConfirm=gid=>{
     const pick=picks[gid]; const g=wc.find(x=>x.id===gid); if(!pick)return;
     const stake=parseFloat(pick.stake);
-    if(!stake||stake<=0)return showToast("Enter how much you want to bet","error");
-    if(stake>user.balance)return showToast("Not enough Brent Bucks!","error");
+    if(!stake||stake<1)return showToast("Minimum bet is ₿1","error");
+    if(stake>user.balance)return showToast(`You only have ₿${(user.balance||0).toFixed(2)} — can't bet more than your balance`,"error");
+    if(user.balance<=0)return showToast("Your balance is ₿0 — deposit first","error");
     setConfirm({gid,team:pick.team,odds:pick.odds,stake,win:calcW(stake,pick.odds),matchup:`${g.t1} vs ${g.t2}`});
   };
 
@@ -372,9 +371,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   const reqDep=async()=>{const a=parseFloat(cash);if(!a||a<=0)return showToast("Enter an amount","error");
     try{await db.addTx({user_id:session.userId,type:"deposit",amount:a,status:"pending"});setCash("");showToast("Request sent! Bring cash to Brent.");await load();}catch(e){showToast("Error","error");}
   };
-  const reqWith=async()=>{const a=parseFloat(cash);if(!a||a<=0)return showToast("Enter an amount","error");
-    if(a>user.balance)return showToast("Not enough Brent Bucks!","error");
-    try{await db.addTx({user_id:session.userId,type:"withdraw",amount:a,status:"pending"});setCash("");showToast("Request sent! Go see Brent.");await load();}catch(e){showToast("Error","error");}
+  const reqWith=async()=>{
+    const a=parseFloat(cash);
+    if(!a||a<=0)return showToast("Enter an amount","error");
+    if(a<10)return showToast("Minimum withdrawal is $10","error");
+    if(!Number.isInteger(a))return showToast("Must be a whole dollar amount — no cents (e.g. $10, $15, $20)","error");
+    const maxWithdraw=Math.floor(user.balance);
+    if(maxWithdraw<10)return showToast(`Your balance (₿${(user.balance||0).toFixed(2)}) is too low — minimum withdrawal is $10`,"error");
+    if(a>maxWithdraw)return showToast(`Max you can withdraw is $${maxWithdraw} — whole dollars only, cents stay in your account`,"error");
+    try{await db.addTx({user_id:session.userId,type:"withdraw",amount:a,status:"pending"});setCash("");showToast(`$${a} withdrawal requested! Go see Brent.`);await load();}catch(e){showToast("Error","error");}
   };
   const togglePrivacy=async()=>{
     try{await db.patchUser(session.userId,{privacy_public:!user.privacy_public});await load();showToast(user.privacy_public?"Stats now private":"Stats now public");}catch(e){}
@@ -536,7 +541,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                       <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
                         <div style={{...S.stakeW,flex:1}}>
                           <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>₿</span>
-                          <input style={S.stakeInp} type="number" placeholder="0.00" value={pick.stake} onChange={e=>setStake(g.id,e.target.value)} min="0"/>
+                          <input style={S.stakeInp} type="number" placeholder="min ₿1" value={pick.stake} onChange={e=>setStake(g.id,e.target.value)} min="1" step="0.01"/>
                         </div>
                         <div style={{textAlign:"right",minWidth:70}}>
                           <div style={{fontSize:10,color:C.dim}}>TO WIN</div>
@@ -616,12 +621,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
               <div style={{fontSize:14,fontWeight:800,color:C.text,marginBottom:12}}>💵 Cash In / Withdraw</div>
               <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"11px 13px",fontSize:12,color:C.sub,lineHeight:1.75,marginBottom:12}}>
                 <strong style={{color:C.gold}}>Deposit:</strong> Enter amount → Request → bring cash to Brent.<br/>
-                <strong style={{color:C.gold}}>Withdraw:</strong> Enter amount → Request → go see Brent to collect.<br/>
-                <span style={{color:C.dim}}>$1 USD = ₿1 Brent Bucks — no refunds on bets</span>
+                <strong style={{color:C.gold}}>Withdraw:</strong> Minimum $10 · whole dollars only · go see Brent to collect.<br/>
+                <span style={{color:C.dim}}>$1 USD = ₿1 · Minimum bet ₿1 · No refunds on bets</span>
               </div>
               <div style={{...S.stakeW,marginBottom:10}}>
                 <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
-                <input style={S.stakeInp} type="number" placeholder="0.00" value={cash} onChange={e=>setCash(e.target.value)} min="0"/>
+                <input style={S.stakeInp} type="number" placeholder="whole dollars only (min $10)" value={cash} onChange={e=>setCash(e.target.value)} min="10" step="1"/>
               </div>
               <div style={{display:"flex",gap:8}}>
                 <button style={{...S.btn,flex:1,padding:"13px"}} onClick={reqDep}>REQUEST DEPOSIT</button>
