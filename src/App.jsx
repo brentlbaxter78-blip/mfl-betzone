@@ -162,9 +162,11 @@ const fetchESPN = async () => {
 
       // Try to get real odds from ESPN's odds data
       const espnOdds = e.competitions?.[0]?.odds?.[0];
-      const realO1   = espnOdds?.homeTeamOdds?.moneyLine ?? espnOdds?.moneylineHome ?? null;
-      const realO2   = espnOdds?.awayTeamOdds?.moneyLine ?? espnOdds?.moneylineAway ?? null;
-      const realDraw = espnOdds?.drawOdds ?? espnOdds?.draw?.moneyLine ?? null;
+      const parseML = v => (v && typeof v === "object") ? (v.moneyLine ?? null) : (v ?? null);
+      const realO1   = parseML(espnOdds?.homeTeamOdds?.moneyLine ?? espnOdds?.moneylineHome);
+      const realO2   = parseML(espnOdds?.awayTeamOdds?.moneyLine ?? espnOdds?.moneylineAway);
+      // ESPN's drawOdds can be {moneyLine: 310} OR a plain number — handle both
+      const realDraw = parseML(espnOdds?.drawOdds?.moneyLine ?? espnOdds?.drawOdds ?? espnOdds?.draw?.moneyLine);
 
       // Use ESPN real odds if available, otherwise fall back to calculated
       const fallback = stableOdds(e.id, t1, t2);
