@@ -222,6 +222,42 @@ const fetchFinalScores = async () => {
   } catch { return {}; }
 };
 
+// ── MLB (real odds + scores from ESPN) ────────────────────────────────────────
+const fetchMLB = async () => {
+  try {
+    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard");
+    if(!r.ok) return [];
+    const d = await r.json();
+    const today = todayET();
+    const evs = (d.events||[]).filter(e =>
+      ["pre","in"].includes(e.status?.type?.state) &&
+      dateStrET(e.date) === today
+    );
+    return evs.map(e => {
+      const cs = e.competitions?.[0]?.competitors||[];
+      const h = cs.find(c=>c.homeAway==="home");
+      const a = cs.find(c=>c.homeAway==="away");
+      const t1 = h?.team?.displayName||"Home";
+      const t2 = a?.team?.displayName||"Away";
+      const abbr1 = h?.team?.abbreviation||"";
+      const abbr2 = a?.team?.abbreviation||"";
+      const isLive = e.status?.type?.state === "in";
+      const espnOdds = e.competitions?.[0]?.odds?.[0];
+      const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
+      const realO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
+      const realO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
+      const o1 = (realO1&&realO1!==0)?realO1:-115; // fallback: slight home advantage
+      const o2 = (realO2&&realO2!==0)?realO2:-105;
+      const homeScore = isLive?(h?.score??null):null;
+      const awayScore = isLive?(a?.score??null):null;
+      const period = isLive?(e.status?.type?.shortDetail??null):null;
+      return { id:e.id, t1, t2, abbr1, abbr2, dt:e.date, sport:"mlb",
+        o1, o2, isLive, usingRealOdds:!!(realO1&&realO1!==0),
+        score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, period };
+    });
+  } catch { return []; }
+};
+
 const CODES={
   "Argentina":"ar","France":"fr","Brazil":"br","England":"gb-eng","Portugal":"pt",
   "Spain":"es","Belgium":"be","Netherlands":"nl","Germany":"de","Croatia":"hr",
@@ -247,6 +283,13 @@ function Flag({team,size=24}){
   return<img src={`https://flagcdn.com/w40/${code}.png`} alt={team} width={Math.round(size*1.45)} height={size} style={{objectFit:"cover",borderRadius:2,display:"inline-block",verticalAlign:"middle"}} onError={()=>setErr(true)}/>;
 }
 const fl=t=>t==="Draw"?"⚖️ Draw":t; // text-only fallback for non-visual contexts
+
+// MLB team logo from ESPN's CDN
+function MLBLogo({abbr,size=26}){
+  const [err,setErr]=useState(false);
+  if(!abbr||err)return<span style={{fontSize:size*0.8,lineHeight:1}}>⚾</span>;
+  return<img src={`https://a.espncdn.com/i/teamlogos/mlb/500/${abbr.toLowerCase()}.png`} alt={abbr} width={size} height={size} style={{objectFit:"contain",display:"inline-block"}} onError={()=>setErr(true)}/>;
+}
 
 const FB = [
   {id:"f1",t1:"Argentina",  t2:"Croatia",    dt:"2026-06-26T19:00:00",rnd:"Group Stage · C"},
@@ -287,15 +330,18 @@ export default function App(){
   const [toast,setToast]=useState(null);
   const [wc,setWc]=useState([]);
   const [wcLoading,setWcLoading]=useState(true);
+  const [mlb,setMlb]=useState([]);
+  const [mlbLoading,setMlbLoading]=useState(true);
   const showToast=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
   const refreshWC=useCallback(async()=>{const g=await fetchWC();setWc(g);setWcLoading(false);},[]);
-  useEffect(()=>{refreshWC();},[refreshWC]);
+  const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]);
+  useEffect(()=>{refreshWC();refreshMLB();},[refreshWC,refreshMLB]);
   useEffect(()=>{
-    const iv=setInterval(()=>{if(!document.hidden)refreshWC();},2*60*1000); // refresh every 2 min
-    const h=()=>{if(!document.hidden)refreshWC();}; // also refresh the moment tab is focused
+    const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();}},2*60*1000);
+    const h=()=>{if(!document.hidden){refreshWC();refreshMLB();}};
     document.addEventListener("visibilitychange",h);
     return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
-  },[refreshWC]);
+  },[refreshWC,refreshMLB]);
   // On load: check localStorage first (remember me), then sessionStorage (this tab only)
   useEffect(()=>{
     try{
@@ -318,7 +364,7 @@ export default function App(){
     try{localStorage.removeItem("mfl_s");sessionStorage.removeItem("mfl_s");}catch(e){}
   };
   if(!session)return<Login login={login} showToast={showToast} toast={toast}/>;
-  return<Main session={session} logout={logout} showToast={showToast} toast={toast} wc={wc} wcLoading={wcLoading}/>;
+  return<Main session={session} logout={logout} showToast={showToast} toast={toast} wc={wc} wcLoading={wcLoading} mlb={mlb} mlbLoading={mlbLoading}/>;
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -453,9 +499,10 @@ function Login({login,showToast,toast}){
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
-function Main({session,logout,showToast,toast,wc,wcLoading}){
+function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const isAdmin=session.isAdmin;
-  const [tab,setTab]=useState("soccer");
+  const [tab,setTab]=useState("bet");
+  const [activeSport,setActiveSport]=useState("soccer");
   const [user,setUser]=useState(isAdmin?{display_name:"Brent",username:"brent",balance:0,cash_in:0,cash_out:0,privacy_public:false,is_admin:true}:null);
   const [bets,setBets]=useState([]); const [allBets,setAllBets]=useState([]);
   const [txs,setTxs]=useState([]);   const [allTxs,setAllTxs]=useState([]);
@@ -524,24 +571,27 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   const setPick=(id,team,odds)=>setPicks(p=>{const ex=p[id];if(ex&&ex.team===team){const n={...p};delete n[id];return n;}return{...p,[id]:{team,odds,stake:""}};});
   const setStake=(id,v)=>setPicks(p=>({...p,[id]:{...p[id],stake:v}}));
 
-  const askConfirm=gid=>{
-    const pick=picks[gid]; const g=wc.find(x=>x.id===gid); if(!pick)return;
+  const findGame=gid=>[...wc,...mlb].find(x=>x.id===gid);
+
+  const askConfirm=(gid,sport="soccer")=>{
+    const pick=picks[gid]; const g=findGame(gid); if(!pick)return;
     const stake=parseFloat(pick.stake);
     if(!stake||stake<1)return showToast("Minimum bet is ₿1","error");
     if(stake>user.balance)return showToast(`You only have ₿${(user.balance||0).toFixed(2)} — can't bet more than your balance`,"error");
     if(user.balance<=0)return showToast("Your balance is ₿0 — deposit first","error");
-    setConfirm({gid,team:pick.team,odds:pick.odds,stake,win:calcW(stake,pick.odds),matchup:`${g.t1} vs ${g.t2}`});
+    setConfirm({gid,team:pick.team,odds:pick.odds,stake,win:calcW(stake,pick.odds),matchup:`${g.t1} vs ${g.t2}`,sport:g?.sport||sport});
   };
 
   const placeBet=async()=>{
     if(!confirm)return;
-    const{gid,team,odds,stake,win,matchup}=confirm; const g=wc.find(x=>x.id===gid);
+    const{gid,team,odds,stake,win,matchup,sport}=confirm; const g=findGame(gid);
     setConfirm(null);
     try{
-      // Deduct from player, credit house
       await db.patchUser(session.userId,{balance:+(user.balance-stake).toFixed(2)});
       if(house) await db.patchUser(house.id,{balance:+(house.balance+stake).toFixed(2)});
-      await db.addBet({user_id:session.userId,type:"single",stake,potential_win:win,legs:[{fighter:team,matchup,odds,fightId:gid,eventDate:g?.dt||null,event:"FIFA World Cup 2026"}]});
+      const eventName=sport==="mlb"?"MLB 2026":"FIFA World Cup 2026";
+      await db.addBet({user_id:session.userId,type:"single",stake,potential_win:win,
+        legs:[{fighter:team,matchup,odds,fightId:gid,eventDate:g?.dt||null,event:eventName,sport:sport||"soccer"}]});
       setPicks(p=>{const n={...p};delete n[gid];return n;});
       showToast(`Bet placed! To win ₿${win.toFixed(2)}`); await load();
     }catch(e){showToast("Error placing bet","error");}
@@ -630,12 +680,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   const totDep=allTxs.filter(t=>t.type==="deposit"&&t.status==="approved"&&t.user_id!==house?.id).reduce((a,t)=>a+t.amount,0);
 
   const USER_TABS=[
-    {id:"soccer",icon:"⚽",label:"Soccer"},
-    {id:"mybets",icon:"🎯",label:`Bets${pending>0?` (${pending})`:""}`},
+    {id:"bet",    icon:"🏆",label:"Bet"},
+    {id:"mybets", icon:"🎯",label:`Bets${pending>0?` (${pending})`:""}`},
     {id:"profile",icon:"👤",label:"Profile"},
   ];
   const ADMIN_TABS=[
-    {id:"soccer",   icon:"⚽",label:"Soccer"},
+    {id:"bet",      icon:"🏆",label:"Bet"},
     {id:"requests", icon:"💵",label:`Money${pendTxs.length>0?` (${pendTxs.length})`:""}`},
     {id:"house",    icon:"💰",label:"House"},
     {id:"users",    icon:"👥",label:"Users"},
@@ -652,7 +702,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
           <div style={S.modal}>
             <div style={{fontSize:16,fontWeight:800,color:C.text,marginBottom:18}}>Confirm Your Bet</div>
             <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"14px",marginBottom:14}}>
-              <div style={{fontSize:10,color:C.dim,fontWeight:700,letterSpacing:"0.06em",marginBottom:6}}>FIFA WORLD CUP 2026</div>
+              <div style={{fontSize:10,color:C.dim,fontWeight:700,letterSpacing:"0.06em",marginBottom:6}}>{confirm.sport==="mlb"?"MLB 2026":"FIFA WORLD CUP 2026"}</div>
               <div style={{fontSize:13,color:C.sub,marginBottom:8}}>{confirm.matchup}</div>
               <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick: <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:5}}><Flag team={confirm.team} size={16}/>{confirm.team}</strong> <span style={{color:C.dim,fontSize:12}}>({fmtO(confirm.odds)})</span></div>
               <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:`1px solid ${C.border}`}}>
@@ -740,9 +790,38 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
 
       <main style={{padding:"14px 14px 80px"}}>
 
-        {/* ── SOCCER / WORLD CUP ── */}
-        {tab==="soccer"&&(
+        {/* ── BET TAB — all sports in one place ── */}
+        {tab==="bet"&&(
           <div>
+            {/* Sport selector — scrollable pill row, just add more sports here */}
+            <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4,marginBottom:16,scrollbarWidth:"none"}}>
+              {[
+                {id:"soccer",icon:"⚽",label:"World Cup"},
+                {id:"mlb",   icon:"⚾",label:"MLB"},
+                {id:"ufc",   icon:"🥊",label:"UFC",  soon:true},
+                {id:"nfl",   icon:"🏈",label:"NFL",  soon:true},
+                {id:"nba",   icon:"🏀",label:"NBA",  soon:true},
+              ].map(s=>(
+                <button key={s.id} onClick={()=>setActiveSport(s.id)}
+                  style={{flexShrink:0,borderRadius:20,padding:"8px 16px",border:`1px solid ${activeSport===s.id&&!s.soon?C.gold:C.border}`,background:activeSport===s.id&&!s.soon?C.gold:C.card,color:activeSport===s.id&&!s.soon?C.bg:s.soon?C.dim:C.text,cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:13,fontWeight:700,whiteSpace:"nowrap"}}>
+                  <span>{s.icon}</span><span>{s.label}</span>
+                  {s.soon&&<span style={{fontSize:9,fontWeight:700,background:"#FF980022",color:"#FF9800",border:"1px solid #FF980033",borderRadius:3,padding:"1px 5px"}}>SOON</span>}
+                </button>
+              ))}
+            </div>
+
+            {/* Coming soon for inactive sports */}
+            {["ufc","nfl","nba"].includes(activeSport)&&(
+              <div style={{textAlign:"center",padding:"52px 20px"}}>
+                <div style={{fontSize:48,marginBottom:14}}>{activeSport==="ufc"?"🥊":activeSport==="nfl"?"🏈":"🏀"}</div>
+                <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:6}}>{activeSport==="ufc"?"UFC Betting":activeSport==="nfl"?"NFL Betting":"NBA Betting"}</div>
+                <div style={{fontSize:13,color:C.dim}}>{activeSport==="nfl"?"Season kicks off Fall 2026":activeSport==="nba"?"Season starts Fall 2026":"Next card TBD — check back soon"}</div>
+              </div>
+            )}
+
+            {/* ── WORLD CUP ── */}
+            {activeSport==="soccer"&&(
+            <div>
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
@@ -830,21 +909,96 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                 </div>
               );
             })}
-            {/* Coming Soon Cards */}
-            <div style={{marginTop:16,display:"flex",flexDirection:"column",gap:10}}>
-              {[{icon:"🏈",label:"NFL Football",sub:"Season kicks off Fall 2026"},{icon:"🥊",label:"UFC Betting",sub:"Next card TBD"},{icon:"⚾",label:"MLB Baseball",sub:"Season in progress — coming soon"}].map(cs=>(
-                <div key={cs.label} style={{...S.card,display:"flex",alignItems:"center",gap:14,padding:"13px 16px"}}>
-                  <span style={{fontSize:24}}>{cs.icon}</span>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:800,color:C.text}}>{cs.label}</div>
-                    <div style={{fontSize:11,color:C.dim,marginTop:1}}>{cs.sub}</div>
-                  </div>
-                  <span style={{fontSize:8,fontWeight:700,letterSpacing:"0.08em",padding:"3px 8px",borderRadius:5,background:"#FF980018",color:"#FF9800",border:"1px solid #FF980033",whiteSpace:"nowrap"}}>COMING SOON</span>
-                </div>
-              ))}
+            {/* No more coming soon cards here — they're in the sport selector above */}
+            </div>)}
+
+            {/* ── MLB ── */}
+            {activeSport==="mlb"&&(
+            <div>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{width:7,height:7,borderRadius:"50%",background:"#C9102B",display:"inline-block",flexShrink:0}}/>
+                <span style={{fontSize:11,fontWeight:700,color:"#C9102B",letterSpacing:"0.04em"}}>
+                  {mlb.some(g=>g.usingRealOdds)?"LIVE ODDS — ESPN BET":"MLB 2026 — MONEYLINES"}
+                </span>
+              </div>
+              <span style={{fontSize:10,color:C.dim}}>2-way · All times ET</span>
             </div>
+            {mlbLoading?<div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚾</div><div style={{fontSize:13}}>Loading MLB games…</div></div>
+            :mlb.length===0?<Empty icon="⚾" title="No MLB games today" sub="Check back tomorrow — games update automatically"/>
+            :mlb.map(g=>{
+              const pick=picks[g.id];
+              const stake=parseFloat(pick?.stake)||0;
+              const payout=stake&&pick?calcW(stake,pick.odds):0;
+              const closed=isClosed(g.dt);
+              const isLive=g.isLive||false;
+              return(
+                <div key={g.id} style={{...S.card,marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                        {isLive&&<span style={{fontSize:9,fontWeight:800,background:"#E5393518",color:"#E53935",border:"1px solid #E5393533",borderRadius:4,padding:"2px 6px"}}>🔴 LIVE</span>}
+                        <span style={{fontSize:10,fontWeight:700,color:"#C9102B",letterSpacing:"0.04em"}}>MLB 2026</span>
+                        {g.usingRealOdds&&<span style={{fontSize:9,fontWeight:600,color:C.green}}>ESPN ✓</span>}
+                      </div>
+                      <div style={{fontSize:10,color:C.dim}}>{fmtDt(g.dt)}</div>
+                    </div>
+                    <div style={{fontSize:10,color:C.dim,textAlign:"right"}}>{g.t2} @ {g.t1}</div>
+                  </div>
+                  {closed&&<div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10}}>
+                    {isLive?"⚾ Game in progress — odds shown, no new bets":"🔒 Betting closed"}
+                  </div>}
+                  {isLive&&g.score&&(
+                    <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,fontSize:17,fontWeight:900,color:C.text}}>
+                        <MLBLogo abbr={g.abbr1} size={18}/>&nbsp;{g.score.home}
+                        <span style={{color:C.dim,fontSize:13,fontWeight:400,margin:"0 4px"}}>—</span>
+                        {g.score.away}&nbsp;<MLBLogo abbr={g.abbr2} size={18}/>
+                      </div>
+                      <div style={{fontSize:11,fontWeight:700,color:C.green,background:"#00E67618",padding:"3px 10px",borderRadius:5}}>{g.period||"● LIVE"}</div>
+                    </div>
+                  )}
+                  {/* 2-way moneyline — no draw in baseball */}
+                  <div style={{display:"flex",gap:8}}>
+                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                      <MLBLogo abbr={g.abbr1} size={30}/>
+                      <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
+                      <span style={{fontSize:14,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
+                    </button>
+                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                      <MLBLogo abbr={g.abbr2} size={30}/>
+                      <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
+                      <span style={{fontSize:14,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
+                    </button>
+                  </div>
+                  {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
+                  {pick&&!isAdmin&&!closed&&(
+                    <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
+                      <div style={{fontSize:12,color:C.dim,marginBottom:10}}>
+                        <strong style={{color:C.gold}}>{pick.team}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
+                      </div>
+                      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+                        <div style={{...S.stakeW,flex:1}}>
+                          <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>₿</span>
+                          <input style={S.stakeInp} type="number" placeholder="min ₿1" value={pick.stake} onChange={e=>setStake(g.id,e.target.value)} min="1" step="0.01"/>
+                        </div>
+                        <div style={{textAlign:"right",minWidth:70}}>
+                          <div style={{fontSize:10,color:C.dim}}>TO WIN</div>
+                          <div style={{fontSize:14,fontWeight:800,color:C.green}}>₿{payout.toFixed(2)}</div>
+                        </div>
+                      </div>
+                      <button style={{...S.btn,width:"100%",padding:"13px"}} onClick={()=>askConfirm(g.id,"mlb")}>PLACE BET</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {/* ← end MLB */}
+            </div>)}
+
           </div>
         )}
+        {/* ← end Bet tab */}
 
         {/* ── MY BETS (user) ── */}
         {tab==="mybets"&&!isAdmin&&(
@@ -854,7 +1008,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
             :bets.map(bet=>(
               <div key={bet.id} style={{...S.card,marginBottom:10}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}><span style={S.badge}>SINGLE</span><span style={{fontSize:10,color:C.dim}}>{fmtDate(bet.placed_at)}</span></div>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}><span style={S.badge}>SINGLE</span><span style={{fontSize:12}}>{bet.legs?.[0]?.sport==="mlb"?"⚾":"⚽"}</span><span style={{fontSize:10,color:C.dim}}>{fmtDate(bet.placed_at)}</span></div>
                   <SPill s={bet.status}/>
                 </div>
                 {bet.legs?.map((l,i)=>(
@@ -1020,21 +1174,25 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
             {/* House balance card */}
             <div style={{...S.card,marginBottom:14,border:`1px solid ${C.gold}33`}}>
               <div style={{fontSize:11,fontWeight:700,color:C.gold,letterSpacing:"0.08em",marginBottom:12}}>HOUSE ACCOUNT — YOUR POT</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-                <div style={{background:C.bg,borderRadius:10,padding:"14px",textAlign:"center"}}>
-                  <div style={{fontSize:11,color:C.dim,marginBottom:4}}>CURRENT POT</div>
-                  <div style={{fontSize:26,fontWeight:900,color:C.gold}}>₿{(house?.balance||0).toFixed(2)}</div>
-                  <div style={{fontSize:10,color:C.dim,marginTop:2}}>= cash in your pot</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:C.dim,marginBottom:4}}>CURRENT POT</div>
+                  <div style={{fontSize:20,fontWeight:900,color:C.gold}}>₿{(house?.balance||0).toFixed(2)}</div>
+                  <div style={{fontSize:9,color:C.dim,marginTop:2}}>cash in pot now</div>
                 </div>
-                <div style={{background:C.bg,borderRadius:10,padding:"14px",textAlign:"center"}}>
-                  <div style={{fontSize:11,color:C.dim,marginBottom:4}}>TOTAL WITHDRAWN</div>
-                  <div style={{fontSize:26,fontWeight:900,color:C.green}}>₿{(house?.cash_out||0).toFixed(2)}</div>
-                  <div style={{fontSize:10,color:C.dim,marginTop:2}}>= profit pocketed</div>
+                <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:C.dim,marginBottom:4}}>WITHDRAWN</div>
+                  <div style={{fontSize:20,fontWeight:900,color:C.green}}>₿{(house?.cash_out||0).toFixed(2)}</div>
+                  <div style={{fontSize:9,color:C.dim,marginTop:2}}>profit pocketed</div>
+                </div>
+                <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:C.dim,marginBottom:4}}>TOTAL EARNED</div>
+                  <div style={{fontSize:20,fontWeight:900,color:C.gold}}>₿{((house?.balance||0)+(house?.cash_out||0)).toFixed(2)}</div>
+                  <div style={{fontSize:9,color:C.dim,marginTop:2}}>pot + withdrawn</div>
                 </div>
               </div>
-              <div style={{fontSize:11,color:C.sub,background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:14,lineHeight:1.7}}>
-                Pot = stakes collected − payouts made − your withdrawals.<br/>
-                Log a withdrawal when you take cash from the pot.
+              <div style={{fontSize:11,color:C.sub,background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:14,lineHeight:1.8}}>
+                <strong style={{color:C.gold}}>How it works:</strong> Every bet placed adds to the pot. Every winning payout reduces it. The 10% vig is built into the odds — so the house naturally keeps ~9¢ per $1 wagered on balanced action. Pot + Withdrawn = your total profit all time.
               </div>
               <div style={{...S.stakeW,marginBottom:10}}>
                 <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
