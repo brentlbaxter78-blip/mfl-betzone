@@ -38,20 +38,30 @@ const db = {
   patchTx:    (id,d) => sb(`transactions?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
 };
 
-// ─── STABLE ODDS (module-level cache, resets every 5 min) ────────────────────
+// ─── STABLE ODDS (module-level cache, resets every 2 min to match refresh) ───
 let _oddsCache = {}, _cacheTime = 0;
-const ODDS_TTL = 5 * 60 * 1000;
+const ODDS_TTL = 2 * 60 * 1000; // sync with refresh interval — odds update every 2 min
 const VIG = 0.10;
 
 const odds3 = (t1, t2) => {
   const s1 = STR[t1]||1100, s2 = STR[t2]||1100;
-  const j = (Math.random()-0.5)*0.04;
-  const rp = Math.min(0.88, Math.max(0.12, s1/(s1+s2)+j));
-  const bal = 1-Math.abs(rp-0.5)*1.6;
-  const dp = 0.20+bal*0.12, rem = 1-dp;
-  const p1=(rp*rem)*(1+VIG), pD=dp*(1+VIG), p2=((1-rp)*rem)*(1+VIG);
-  const ml=p=>p>=0.5?-Math.round(p/(1-p)*100):+Math.round((1-p)/p*100);
-  return{o1:ml(p1),oDraw:ml(pD),o2:ml(p2)};
+  const D = (s1 - s2) + (Math.random()-0.5)*60; // strength diff + small jitter
+  // H2H win probability via logistic curve
+  const h2h = 0.5 + 0.5 * Math.tanh(D / 900);
+  // Draw probability: ~27% for even match, falls with mismatch
+  const drawP = Math.max(0.10, 0.27 - Math.abs(D) / 6000);
+  // True 3-way probabilities
+  const p1 = h2h * (1 - drawP);       // stronger team win
+  const pD = drawP;
+  const p2 = (1 - h2h) * (1 - drawP); // weaker team win
+  // Convert to American moneyline with 10% vig applied
+  const toAML = p => {
+    const vp = p * (1 + VIG); // implied probability after vig
+    return vp >= 0.5
+      ? -Math.round(vp / (1 - vp) * 100)   // favorite (negative)
+      : +Math.round((1 - vp) / vp * 100);   // underdog (positive)
+  };
+  return { o1: toAML(p1), oDraw: toAML(pD), o2: toAML(p2) };
 };
 
 const stableOdds = (gid, t1, t2) => {
@@ -134,10 +144,14 @@ const fetchESPN = async () => {
     const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
     if (!r.ok) return null;
     const d = await r.json();
-    // Show pre-game AND in-progress — odds visible 24/7, betting locks 3 min before
-    const evs = (d.events||[]).filter(e => ["pre","in"].includes(e.status?.type?.state));
-    if (!evs.length) return null;
-    return evs.slice(0,10).map(e => {
+    const today = new Date().toDateString(); // "Thu Jun 25 2026"
+    // Only show games happening today (pre-game or in-progress)
+    const evs = (d.events||[]).filter(e =>
+      ["pre","in"].includes(e.status?.type?.state) &&
+      new Date(e.date).toDateString() === today
+    );
+    if (!evs.length) return []; // no games today — return empty, not fallback
+    return evs.map(e => {
       const cs = e.competitions?.[0]?.competitors||[];
       const h  = cs.find(c=>c.homeAway==="home"), a = cs.find(c=>c.homeAway==="away");
       const t1 = normName(h?.team?.displayName||"Home");
@@ -148,13 +162,13 @@ const fetchESPN = async () => {
   } catch { return null; }
 };
 
-// Master fetch: live odds API → ESPN fallback → hardcoded fallback
+// Master fetch: live odds API → ESPN today → no games message
 const fetchWC = async () => {
   const live = await fetchLiveOdds();
   if (live?.length) return live;
   const espn = await fetchESPN();
-  if (espn?.length) return espn;
-  return FB;
+  if (espn === null) return FB; // ESPN failed entirely → use hardcoded fallback
+  return espn; // could be empty array [] = no games today, that's fine
 };
 
 const CODES={
@@ -216,10 +230,13 @@ const fetchWC = async () => {
 const isClosed = dt => new Date() >= new Date(new Date(dt).getTime() - 180000);
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
+const ET = "America/New_York"; // all times run on Eastern Time
 const fmtO = o => o>0?`+${o}`:`${o}`;
 const calcW = (s,o) => o>0?+(s*(o/100)).toFixed(2):+(s*(100/Math.abs(o))).toFixed(2);
-const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"America/New_York"})+" · "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/New_York",timeZoneName:"short"}); };
-const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:"America/New_York"});
+const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET})+" · "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"}); };
+const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
+const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET}); // "2026-06-25" — used for day comparison
+const todayET = () => dateStrET(new Date().toISOString()); // today's date in ET regardless of user's location
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
@@ -624,7 +641,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
             </div>
             {wcLoading?(
               <div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚽</div><div style={{fontSize:13}}>Loading odds…</div></div>
-            ):wc.length===0?<Empty icon="⚽" title="No upcoming matches" sub="Check back soon for odds"/>
+            ):wc.length===0?<Empty icon="📅" title="No games today" sub="Check back on matchdays — odds update every 2 min when games are scheduled"/>
             :wc.map(g=>{
               const pick=picks[g.id];
               const stake=parseFloat(pick?.stake)||0;
@@ -729,10 +746,17 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                 </div>
               </div>
             ))}
+            {/* Parlays coming soon */}
+            <div style={{...S.card,marginTop:10,display:"flex",alignItems:"center",gap:14,padding:"14px 16px",opacity:0.7}}>
+              <span style={{fontSize:24}}>🔗</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:800,color:C.text}}>Parlay Bets</div>
+                <div style={{fontSize:11,color:C.dim,marginTop:1}}>Combine multiple picks for a bigger payout</div>
+              </div>
+              <span style={{fontSize:8,fontWeight:700,letterSpacing:"0.08em",padding:"3px 8px",borderRadius:5,background:"#FF980018",color:"#FF9800",border:"1px solid #FF980033",whiteSpace:"nowrap"}}>COMING SOON</span>
+            </div>
           </div>
         )}
-
-        {/* ── PROFILE (user) ── */}
         {tab==="profile"&&!isAdmin&&(
           <div>
             <div style={{textAlign:"center",padding:"22px 14px 18px",background:C.card,borderRadius:14,border:`1px solid ${C.border}`,marginBottom:14}}>
