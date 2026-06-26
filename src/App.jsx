@@ -45,7 +45,7 @@ const VIG = 0.10;
 
 const odds3 = (t1, t2) => {
   const s1 = STR[t1]||1100, s2 = STR[t2]||1100;
-  const D = (s1 - s2) + (Math.random()-0.5)*60; // strength diff + small jitter
+  const D = s1 - s2; // pure strength difference — no random jitter, odds are deterministic
   // H2H win probability via logistic curve
   const h2h = 0.5 + 0.5 * Math.tanh(D / 900);
   // Draw probability: ~27% for even match, falls with mismatch
@@ -66,8 +66,11 @@ const odds3 = (t1, t2) => {
 
 const stableOdds = (gid, t1, t2) => {
   const now = Date.now();
-  if (now - _cacheTime > ODDS_TTL) { _oddsCache = {}; _cacheTime = now; }
-  if (!_oddsCache[gid]) _oddsCache[gid] = odds3(t1, t2);
+  // Only expire cache for games not yet closed — once betting locks, odds are frozen
+  if (!_oddsCache[gid]) {
+    if (now - _cacheTime > ODDS_TTL) { _oddsCache = {}; _cacheTime = now; }
+    _oddsCache[gid] = odds3(t1, t2);
+  }
   return _oddsCache[gid];
 };
 
@@ -138,26 +141,47 @@ const fetchLiveOdds = async () => {
   }
 };
 
-// ── ESPN FALLBACK (game schedule + simulated odds) ────────────────────────────
+// ── ESPN FALLBACK (real game schedule + real ESPN odds when available) ─────────
 const fetchESPN = async () => {
   try {
     const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
     if (!r.ok) return null;
     const d = await r.json();
-    const today = todayET(); // e.g. "2026-06-25" — always Eastern Time, regardless of user's location
-    // Only show games happening today in ET (pre-game or in-progress)
+    const today = todayET();
     const evs = (d.events||[]).filter(e =>
       ["pre","in"].includes(e.status?.type?.state) &&
       dateStrET(e.date) === today
     );
-    if (!evs.length) return []; // no games today — return empty, not fallback
+    if (!evs.length) return [];
     return evs.map(e => {
       const cs = e.competitions?.[0]?.competitors||[];
       const h  = cs.find(c=>c.homeAway==="home"), a = cs.find(c=>c.homeAway==="away");
       const t1 = normName(h?.team?.displayName||"Home");
       const t2 = normName(a?.team?.displayName||"Away");
       const isLive = e.status?.type?.state === "in";
-      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, ...stableOdds(e.id,t1,t2) };
+
+      // Try to get real odds from ESPN's odds data
+      const espnOdds = e.competitions?.[0]?.odds?.[0];
+      const realO1   = espnOdds?.homeTeamOdds?.moneyLine ?? espnOdds?.moneylineHome ?? null;
+      const realO2   = espnOdds?.awayTeamOdds?.moneyLine ?? espnOdds?.moneylineAway ?? null;
+      const realDraw = espnOdds?.drawOdds ?? espnOdds?.draw?.moneyLine ?? null;
+
+      // Use ESPN real odds if available, otherwise fall back to calculated
+      const fallback = stableOdds(e.id, t1, t2);
+      const o1    = (realO1    !== null && realO1    !== 0) ? realO1    : fallback.o1;
+      const o2    = (realO2    !== null && realO2    !== 0) ? realO2    : fallback.o2;
+      const oDraw = (realDraw  !== null && realDraw  !== 0) ? realDraw  : fallback.oDraw;
+      const usingRealOdds = realO1 !== null && realO1 !== 0;
+
+      // Live score and clock (only populated when game is in progress)
+      const homeScore = isLive ? (h?.score ?? null) : null;
+      const awayScore = isLive ? (a?.score ?? null) : null;
+      const clock  = isLive ? (e.status?.displayClock ?? null) : null;
+      const period = isLive ? (e.status?.type?.shortDetail ?? null) : null;
+
+      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, usingRealOdds, o1, oDraw, o2,
+        score: (homeScore !== null && awayScore !== null) ? {home:homeScore, away:awayScore} : null,
+        clock, period };
     });
   } catch { return null; }
 };
@@ -167,8 +191,33 @@ const fetchWC = async () => {
   const live = await fetchLiveOdds();
   if (live?.length) return live;
   const espn = await fetchESPN();
-  if (espn === null) return FB; // ESPN failed entirely → use hardcoded fallback
-  return espn; // could be empty array [] = no games today, that's fine
+  if (espn === null) return FB;
+  return espn;
+};
+
+// Auto-fetch final scores from ESPN for completed games — used to pre-fill settle scores
+const fetchFinalScores = async () => {
+  try {
+    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
+    if(!r.ok) return {};
+    const d = await r.json();
+    const scores = {};
+    (d.events||[])
+      .filter(e => e.status?.type?.state === "post") // only completed games
+      .forEach(e => {
+        const cs = e.competitions?.[0]?.competitors||[];
+        const h = cs.find(c=>c.homeAway==="home");
+        const a = cs.find(c=>c.homeAway==="away");
+        if(!h||!a) return;
+        const t1 = normName(h.team?.displayName||"");
+        const t2 = normName(a.team?.displayName||"");
+        const str = `${t1} ${h.score||0} - ${a.score||0} ${t2}`;
+        // Store both orderings so we can match regardless of home/away
+        scores[`${t1}|${t2}`] = str;
+        scores[`${t2}|${t1}`] = str;
+      });
+    return scores;
+  } catch { return {}; }
 };
 
 const CODES={
@@ -414,15 +463,33 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   const [picks,setPicks]=useState({}); const [cash,setCash]=useState("");
   const [houseCash,setHouseCash]=useState("");
   const [expanded,setExpanded]=useState(null); const [showPw,setShowPw]=useState({});
+  const [betNotifs,setBetNotifs]=useState([]);
+  const [settleScores,setSettleScores]=useState({});
   const [delConfirm,setDelConfirm]=useState(null);
   const [confirm,setConfirm]=useState(null);
 
   const load=useCallback(async()=>{
     try{
       if(isAdmin){
-        const [u,b,pb,p,a,h]=await Promise.all([db.allUsers(),db.allBets(),db.pendBets(),db.pendingTxs(),db.allTxs(),db.getHouse()]);
+        const [u,b,pb,p,a,h,finalScores]=await Promise.all([
+          db.allUsers(),db.allBets(),db.pendBets(),db.pendingTxs(),db.allTxs(),db.getHouse(),
+          fetchFinalScores() // auto-fetch completed game scores
+        ]);
         setUsers((u||[]).filter(x=>!x.is_admin));
         setAllBets(b||[]); setPend(p||[]); setAllTxs(a||[]); setHouse(h?.[0]||null);
+        // Auto-fill score field for any pending bet whose game has finished
+        setSettleScores(prev=>{
+          const auto={};
+          (pb||[]).forEach(bet=>{
+            if(prev[bet.id]) return; // don't overwrite manually entered scores
+            const leg=bet.legs?.[0];
+            if(!leg?.matchup) return;
+            const [t1,t2]=(leg.matchup||"").split(" vs ").map(s=>s.trim());
+            const score=finalScores[`${t1}|${t2}`]||finalScores[`${t2}|${t1}`];
+            if(score) auto[bet.id]=score;
+          });
+          return{...auto,...prev}; // manual entries always win
+        });
       }else{
         const [u,b,t,us,ab]=await Promise.all([db.getUser(session.userId),db.myBets(session.userId),db.myTxs(session.userId),db.allUsers(),db.allBets()]);
         if(u?.[0])setUser(u[0]); setBets(b||[]); setTxs(t||[]);
@@ -433,6 +500,24 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
+
+  // Check for newly settled bets to show win/loss popup
+  useEffect(()=>{
+    if(isAdmin||!bets.length)return;
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_notifs")||"[]");
+      const unseen=bets.filter(b=>(b.status==="won"||b.status==="lost")&&!seen.includes(b.id));
+      if(unseen.length)setBetNotifs(unseen);
+    }catch(e){}
+  },[bets,isAdmin]);
+
+  const dismissNotif=id=>{
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_notifs")||"[]");
+      localStorage.setItem("mfl_notifs",JSON.stringify([...seen,id]));
+    }catch(e){}
+    setBetNotifs(p=>p.filter(b=>b.id!==id));
+  };
 
   const setPick=(id,team,odds)=>setPicks(p=>{const ex=p[id];if(ex&&ex.team===team){const n={...p};delete n[id];return n;}return{...p,[id]:{team,odds,stake:""}};});
   const setStake=(id,v)=>setPicks(p=>({...p,[id]:{...p[id],stake:v}}));
@@ -465,8 +550,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
     const bet=allBets.find(b=>b.id===betId);
     const player=users.find(u=>u.id===bet?.user_id);
     if(!bet||!player)return;
+    const score=settleScores[betId]||"";
+    const updatedLegs=(bet.legs||[]).map(l=>({...l,result:score||null}));
     try{
-      await db.patchBet(betId,{status:outcome});
+      await db.patchBet(betId,{status:outcome,legs:updatedLegs});
       if(outcome==="won"){
         const payout=+(bet.stake+bet.potential_win).toFixed(2);
         await db.patchUser(player.id,{balance:+(player.balance+payout).toFixed(2)});
@@ -475,6 +562,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
       }else{
         showToast(`Bet marked as lost — house keeps ₿${bet.stake}`);
       }
+      setSettleScores(p=>{const n={...p};delete n[betId];return n;});
       await load();
     }catch(e){showToast("Error settling bet","error");}
   };
@@ -580,7 +668,48 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
         </div>
       )}
 
-      {/* HEADER */}
+      {/* WIN / LOSS NOTIFICATION POPUP */}
+      {betNotifs.length>0&&(()=>{
+        const bet=betNotifs[0];
+        const leg=bet.legs?.[0];
+        const won=bet.status==="won";
+        const payout=+(bet.stake+bet.potential_win).toFixed(2);
+        return(
+          <div style={S.over}>
+            <div style={{...S.modal,textAlign:"center"}}>
+              <div style={{fontSize:56,marginBottom:8}}>{won?"🏆":"💔"}</div>
+              <div style={{fontSize:28,fontWeight:900,color:won?C.green:"#E53935",marginBottom:4}}>
+                {won?"YOU WON!":"YOU LOST"}
+              </div>
+              {won
+                ?<div style={{fontSize:22,fontWeight:800,color:C.gold,marginBottom:16}}>+₿{payout.toFixed(2)}</div>
+                :<div style={{fontSize:16,color:C.sub,marginBottom:16}}>−₿{bet.stake}</div>}
+              <div style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px 16px",marginBottom:16,textAlign:"left"}}>
+                <div style={{fontSize:11,color:C.dim,fontWeight:600,letterSpacing:"0.06em",marginBottom:6}}>BET DETAILS</div>
+                <div style={{fontSize:13,color:C.sub,marginBottom:4}}>{leg?.matchup}</div>
+                <div style={{fontSize:14,color:C.text,marginBottom:leg?.result?8:0}}>
+                  Pick: <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:4}}>
+                    <Flag team={leg?.fighter} size={14}/>{leg?.fighter}
+                  </strong>
+                  <span style={{color:C.dim,marginLeft:6}}>({fmtO(leg?.odds)})</span>
+                </div>
+                {leg?.result&&(
+                  <div style={{background:C.card,borderRadius:8,padding:"8px 12px",fontSize:14,fontWeight:700,color:C.text}}>
+                    Final Score: {leg.result}
+                  </div>
+                )}
+                <div style={{display:"flex",gap:16,fontSize:12,color:C.dim,marginTop:8,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
+                  <span>Staked <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
+                  <span>{won?"Profit":"Loss"} <strong style={{color:won?C.green:"#E53935"}}>{won?"+":"-"}₿{won?bet.potential_win.toFixed(2):bet.stake}</strong></span>
+                </div>
+              </div>
+              <button style={{...S.btn,width:"100%",padding:"15px",background:won?C.green:C.gold}} onClick={()=>dismissNotif(bet.id)}>
+                {betNotifs.length>1?`Next (${betNotifs.length-1} more)`:"Got it!"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
       <header style={S.hdr}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 16px 10px"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -616,7 +745,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
                 <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
-                  {ODDS_API_KEY?"LIVE ODDS — THE ODDS API":"ODDS — FIFA WORLD CUP 2026"}
+                  {ODDS_API_KEY ? "LIVE ODDS — THE ODDS API" : wc.some(g=>g.usingRealOdds) ? "LIVE ODDS — ESPN BET" : "ODDS — FIFA WORLD CUP 2026"}
                 </span>
               </div>
               <span style={{fontSize:10,color:C.dim}}>updates every 2 min · All times ET</span>
@@ -645,6 +774,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                   {closed&&(
                     <div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10}}>
                       {isLive?"⚽ Game in progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
+                    </div>
+                  )}
+                  {/* LIVE SCORE */}
+                  {isLive&&g.score&&(
+                    <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:17,fontWeight:900,color:C.text}}>
+                        <Flag team={g.t1} size={18}/>&nbsp;{g.score.home}
+                        <span style={{color:C.dim,fontSize:13,fontWeight:400,margin:"0 4px"}}>—</span>
+                        {g.score.away}&nbsp;<Flag team={g.t2} size={18}/>
+                      </div>
+                      <div style={{fontSize:11,fontWeight:700,color:C.green,background:"#00E67618",padding:"3px 10px",borderRadius:5,letterSpacing:"0.04em"}}>
+                        {g.period||g.clock||"● LIVE"}
+                      </div>
                     </div>
                   )}
                   <div style={{display:"flex",gap:5}}>
@@ -915,9 +1057,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                       {l.matchup} → <strong style={{color:C.gold}}>{betLabel(l.fighter)}</strong>
                     </div>
                   ))}
-                  <div style={{display:"flex",gap:12,fontSize:12,color:C.dim,margin:"8px 0 12px",paddingTop:8,borderTop:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",gap:12,fontSize:12,color:C.dim,margin:"8px 0 10px",paddingTop:8,borderTop:`1px solid ${C.border}`}}>
                     <span>Stake <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
                     <span>Payout if won <strong style={{color:C.green}}>₿{+(bet.stake+bet.potential_win).toFixed(2)}</strong></span>
+                  </div>
+                  {/* Score — auto-fetched from ESPN when available, editable */}
+                  <div style={{position:"relative",marginBottom:8}}>
+                    <input
+                      style={{...S.inp,fontSize:13,padding:"9px 12px",paddingRight:settleScores[bet.id]?"80px":"12px"}}
+                      placeholder="Final score (auto-fills from ESPN when game ends)"
+                      value={settleScores[bet.id]||""}
+                      onChange={e=>setSettleScores(p=>({...p,[bet.id]:e.target.value}))}
+                    />
+                    {settleScores[bet.id]&&<span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em"}}>AUTO ✓</span>}
                   </div>
                   <div style={{display:"flex",gap:8}}>
                     <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+bet.potential_win).toFixed(2)}</button>
