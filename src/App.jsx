@@ -208,24 +208,6 @@ const FB = [
   {id:"f8",t1:"Netherlands",t2:"Qatar",      dt:"2026-06-27T22:00:00",rnd:"Group Stage · H"},
 ].map(g=>({...g,...stableOdds(g.id,g.t1,g.t2)}));
 
-const fetchWC = async () => {
-  try {
-    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
-    if (!r.ok) return FB;
-    const d = await r.json();
-    // Show only pre-game matches (not live, not finished)
-    const evs = (d.events||[]).filter(e => e.status?.type?.state === "pre");
-    if (!evs.length) return FB;
-    return evs.slice(0,8).map(e => {
-      const cs = e.competitions?.[0]?.competitors||[];
-      const h = cs.find(c=>c.homeAway==="home"), a = cs.find(c=>c.homeAway==="away");
-      const t1 = normName(h?.team?.displayName||"Home");
-      const t2 = normName(a?.team?.displayName||"Away");
-      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", ...stableOdds(e.id,t1,t2) };
-    });
-  } catch { return FB; }
-};
-
 // Closes 3 minutes before game (not live betting)
 const isClosed = dt => new Date() >= new Date(new Date(dt).getTime() - 180000);
 
