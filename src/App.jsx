@@ -157,8 +157,10 @@ const fetchESPN = async () => {
       const t1 = normName(h?.team?.displayName||"Home");
       const t2 = normName(a?.team?.displayName||"Away");
       const state   = e.status?.type?.state;
+      const desc    = e.status?.type?.description?.toLowerCase()||"";
       const isLive  = state === "in";
       const isFinal = state === "post";
+      const isPostponed = state === "postponed" || desc.includes("postponed") || desc.includes("canceled") || desc.includes("suspended");
 
       // Try to get real odds from ESPN's odds data
       const espnOdds = e.competitions?.[0]?.odds?.[0];
@@ -173,6 +175,8 @@ const fetchESPN = async () => {
       const o1    = (realO1    !== null && realO1    !== 0) ? realO1    : fallback.o1;
       const o2    = (realO2    !== null && realO2    !== 0) ? realO2    : fallback.o2;
       const oDraw = (realDraw  !== null && realDraw  !== 0) ? realDraw  : fallback.oDraw;
+      // Save real odds before game ends so they persist on the final score card
+      if(realO1&&realO1!==0) saveOdds(e.id,{o1,o2,oDraw});
       const usingRealOdds = realO1 !== null && realO1 !== 0;
 
       // Score shown for live AND final games
@@ -181,7 +185,7 @@ const fetchESPN = async () => {
       const clock  = isLive ? (e.status?.displayClock ?? null) : null;
       const period = (isLive||isFinal) ? (e.status?.type?.shortDetail ?? null) : null;
 
-      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, isFinal, usingRealOdds, o1, oDraw, o2,
+      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, isFinal, isPostponed, usingRealOdds, o1, oDraw, o2,
         score: (homeScore !== null && awayScore !== null) ? {home:homeScore, away:awayScore} : null,
         clock, period };
     });
@@ -241,19 +245,25 @@ const fetchMLB = async () => {
       const abbr1 = h?.team?.abbreviation||"";
       const abbr2 = a?.team?.abbreviation||"";
       const state = e.status?.type?.state;
-      const isLive  = state === "in";
-      const isFinal = state === "post";
+      const desc  = e.status?.type?.description?.toLowerCase()||"";
+      const isLive      = state === "in";
+      const isFinal     = state === "post";
+      const isPostponed = state === "postponed" || desc.includes("postponed") || desc.includes("canceled") || desc.includes("suspended");
       const espnOdds = e.competitions?.[0]?.odds?.[0];
       const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
       const realO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
       const realO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
-      const o1 = (realO1&&realO1!==0)?realO1:-115;
-      const o2 = (realO2&&realO2!==0)?realO2:-105;
+      // If ESPN has real odds, save them so they're available after the game ends
+      if(realO1&&realO1!==0) saveOdds(e.id,{o1:realO1,o2:realO2});
+      // After game ends ESPN drops the odds — load our saved pre-game odds
+      const saved = loadOdds(e.id);
+      const o1 = (realO1&&realO1!==0)?realO1:(saved?.o1??-115);
+      const o2 = (realO2&&realO2!==0)?realO2:(saved?.o2??-105);
       const homeScore = (isLive||isFinal)?(h?.score??null):null;
       const awayScore = (isLive||isFinal)?(a?.score??null):null;
       const period = (isLive||isFinal)?(e.status?.type?.shortDetail??null):null;
       return { id:e.id, t1, t2, abbr1, abbr2, dt:e.date, sport:"mlb",
-        o1, o2, isLive, isFinal, usingRealOdds:!!(realO1&&realO1!==0),
+        o1, o2, isLive, isFinal, isPostponed, usingRealOdds:!!(realO1&&realO1!==0),
         score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, period };
     });
   } catch { return []; }
@@ -318,6 +328,9 @@ const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
+// Persist pre-game odds so they survive after the game ends (ESPN removes odds post-game)
+const saveOdds = (id, odds) => { try{ localStorage.setItem(`mfl_o_${id}`, JSON.stringify(odds)); }catch{} };
+const loadOdds = (id) => { try{ const s=localStorage.getItem(`mfl_o_${id}`); return s?JSON.parse(s):null; }catch{ return null; } };
 const timeUntil = dt => {
   const diff = new Date(dt) - new Date();
   if(diff <= 0) return null;
@@ -560,12 +573,38 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
 
   useEffect(()=>{load();},[load]);
 
+  // Auto-refund any pending bets on postponed/cancelled games — no player or admin action needed
+  useEffect(()=>{
+    if(isAdmin) return;
+    const postponedIds=[...mlb,...wc].filter(g=>g.isPostponed).map(g=>g.id);
+    if(!postponedIds.length) return;
+    const toRefund=bets.filter(b=>
+      b.status==="pending" &&
+      b.legs?.some(l=>postponedIds.includes(l.fightId)) &&
+      !localStorage.getItem(`mfl_refunded_${b.id}`)
+    );
+    if(!toRefund.length) return;
+    (async()=>{
+      try{
+        const houseAcct=(await db.getHouse())?.[0];
+        for(const bet of toRefund){
+          await db.patchBet(bet.id,{status:"cancelled"});
+          await db.patchUser(session.userId,{balance:+(user.balance+bet.stake).toFixed(2)});
+          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-bet.stake).toFixed(2)});
+          localStorage.setItem(`mfl_refunded_${bet.id}`,"1");
+        }
+        showToast(`Game postponed — ₿${toRefund.reduce((a,b)=>a+b.stake,0).toFixed(2)} auto-refunded`);
+        await load();
+      }catch(e){}
+    })();
+  },[mlb,wc,bets,isAdmin]);
+
   // Check for newly settled bets to show win/loss popup
   useEffect(()=>{
     if(isAdmin||!bets.length)return;
     try{
       const seen=JSON.parse(localStorage.getItem("mfl_notifs")||"[]");
-      const unseen=bets.filter(b=>(b.status==="won"||b.status==="lost")&&!seen.includes(b.id));
+      const unseen=bets.filter(b=>(b.status==="won"||b.status==="lost"||b.status==="cancelled")&&!seen.includes(b.id));
       if(unseen.length)setBetNotifs(unseen);
     }catch(e){}
   },[bets,isAdmin]);
@@ -672,6 +711,18 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       setHouseCash("");showToast(`₿${a} logged — take $${a} from the pot`);await load();
     }catch(e){showToast("Error","error");}
   };
+  const cancelBet=async(betId)=>{
+    const bet=allBets.find(b=>b.id===betId);
+    const player=users.find(u=>u.id===bet?.user_id);
+    if(!bet||!player)return;
+    try{
+      await db.patchBet(betId,{status:"cancelled"});
+      await db.patchUser(player.id,{balance:+(player.balance+bet.stake).toFixed(2)});
+      if(house) await db.patchUser(house.id,{balance:+(house.balance-bet.stake).toFixed(2)});
+      showToast(`₿${bet.stake} refunded to ${player.display_name}`);
+      await load();
+    }catch(e){showToast("Error refunding bet","error");}
+  };
   const doDelete=async uid=>{
     try{await db.deleteUser(uid);setDelConfirm(null);setExpanded(null);showToast("Account deleted");await load();}
     catch(e){showToast("Error deleting","error");}
@@ -735,17 +786,20 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         const bet=betNotifs[0];
         const leg=bet.legs?.[0];
         const won=bet.status==="won";
+        const cancelled=bet.status==="cancelled";
         const payout=+(bet.stake+bet.potential_win).toFixed(2);
         return(
           <div style={S.over}>
             <div style={{...S.modal,textAlign:"center"}}>
-              <div style={{fontSize:56,marginBottom:8}}>{won?"🏆":"💔"}</div>
-              <div style={{fontSize:28,fontWeight:900,color:won?C.green:"#E53935",marginBottom:4}}>
-                {won?"YOU WON!":"YOU LOST"}
+              <div style={{fontSize:56,marginBottom:8}}>{cancelled?"↩️":won?"🏆":"💔"}</div>
+              <div style={{fontSize:28,fontWeight:900,color:cancelled?"#FF9800":won?C.green:"#E53935",marginBottom:4}}>
+                {cancelled?"BET REFUNDED":won?"YOU WON!":"YOU LOST"}
               </div>
-              {won
-                ?<div style={{fontSize:22,fontWeight:800,color:C.gold,marginBottom:16}}>+₿{payout.toFixed(2)}</div>
-                :<div style={{fontSize:16,color:C.sub,marginBottom:16}}>−₿{bet.stake}</div>}
+              {cancelled
+                ?<div style={{fontSize:15,color:C.sub,marginBottom:16}}>Game postponed or cancelled — ₿{bet.stake} returned to your balance</div>
+                :won
+                  ?<div style={{fontSize:22,fontWeight:800,color:C.gold,marginBottom:16}}>+₿{payout.toFixed(2)}</div>
+                  :<div style={{fontSize:16,color:C.sub,marginBottom:16}}>−₿{bet.stake}</div>}
               <div style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px 16px",marginBottom:16,textAlign:"left"}}>
                 <div style={{fontSize:11,color:C.dim,fontWeight:600,letterSpacing:"0.06em",marginBottom:6}}>BET DETAILS</div>
                 <div style={{fontSize:13,color:C.sub,marginBottom:4}}>{leg?.matchup}</div>
@@ -765,7 +819,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <span>{won?"Profit":"Loss"} <strong style={{color:won?C.green:"#E53935"}}>{won?"+":"-"}₿{won?bet.potential_win.toFixed(2):bet.stake}</strong></span>
                 </div>
               </div>
-              <button style={{...S.btn,width:"100%",padding:"15px",background:won?C.green:C.gold}} onClick={()=>dismissNotif(bet.id)}>
+              <button style={{...S.btn,width:"100%",padding:"15px",background:cancelled?"#FF9800":won?C.green:C.gold}} onClick={()=>dismissNotif(bet.id)}>
                 {betNotifs.length>1?`Next (${betNotifs.length-1} more)`:"Got it!"}
               </button>
             </div>
@@ -949,14 +1003,16 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const closed=isClosed(g.dt);
               const isLive=g.isLive||false;
               const isFinal=g.isFinal||false;
-              const until=!isLive&&!closed&&!isFinal?timeUntil(g.dt):null;
+              const isPostponed=g.isPostponed||false;
+              const until=!isLive&&!closed&&!isFinal&&!isPostponed?timeUntil(g.dt):null;
               return(
-                <div key={g.id} style={{...S.card,marginBottom:12,opacity:isFinal?0.8:1}}>
+                <div key={g.id} style={{...S.card,marginBottom:12,opacity:(isFinal||isPostponed)?0.75:1}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
                         {isLive&&<span style={S.liveBadge}>🔴 LIVE</span>}
                         {isFinal&&<span style={{fontSize:9,fontWeight:800,background:"#1A1A2A",color:C.sub,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px"}}>FINAL</span>}
+                        {isPostponed&&<span style={{fontSize:9,fontWeight:800,background:"#FF980018",color:"#FF9800",border:"1px solid #FF980033",borderRadius:4,padding:"2px 6px"}}>⚠️ POSTPONED</span>}
                         <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>MLB 2026</span>
                       </div>
                       <div style={{fontSize:10,color:C.dim}}>{g.t2} @ {g.t1}</div>
@@ -966,7 +1022,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
-                  {closed&&<div style={S.closedBanner}>{isFinal?"✓ Final — no more bets":isLive?"⚾ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
+                  {(closed||isPostponed)&&<div style={isPostponed?{...S.closedBanner,background:"#1A0E00",border:"1px solid #FF980033",color:"#FF9800"}:S.closedBanner}>{isPostponed?"⚠️ Postponed — bets will be refunded by admin":isFinal?"✓ Final — no more bets":isLive?"⚾ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
                   {(isLive||isFinal)&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,fontSize:17,fontWeight:900,color:C.text}}>
