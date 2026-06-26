@@ -5,7 +5,7 @@ const SUPA_URL = "https://nuiffniijnbzzkvxxtle.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51aWZmbmlpam5ienprdnh4dGxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDA5MzgsImV4cCI6MjA5NzkxNjkzOH0.dlKFKRYwZIU_GefbPV7aDhOab5B7jGByVTAAV3uQ8C8";
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
 // ↓ Get a FREE key at the-odds-api.com (500 req/month, no credit card)
-const ODDS_API_KEY = ""; // paste your key between the quotes
+const ODDS_API_KEY = "74e19c24b7987832b03596d42f4bca0d"; // paste your key between the quotes
 
 const sb = async (path, opts = {}) => {
   const { method = "GET", body, prefer = "return=representation" } = opts;
