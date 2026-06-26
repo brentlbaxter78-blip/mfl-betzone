@@ -148,17 +148,17 @@ const fetchESPN = async () => {
     if (!r.ok) return null;
     const d = await r.json();
     const today = todayET();
-    const evs = (d.events||[]).filter(e =>
-      ["pre","in"].includes(e.status?.type?.state) &&
-      dateStrET(e.date) === today
-    );
+    // Include ALL of today's games: upcoming, live, and final
+    const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
     if (!evs.length) return [];
     return evs.map(e => {
       const cs = e.competitions?.[0]?.competitors||[];
       const h  = cs.find(c=>c.homeAway==="home"), a = cs.find(c=>c.homeAway==="away");
       const t1 = normName(h?.team?.displayName||"Home");
       const t2 = normName(a?.team?.displayName||"Away");
-      const isLive = e.status?.type?.state === "in";
+      const state   = e.status?.type?.state;
+      const isLive  = state === "in";
+      const isFinal = state === "post";
 
       // Try to get real odds from ESPN's odds data
       const espnOdds = e.competitions?.[0]?.odds?.[0];
@@ -175,13 +175,13 @@ const fetchESPN = async () => {
       const oDraw = (realDraw  !== null && realDraw  !== 0) ? realDraw  : fallback.oDraw;
       const usingRealOdds = realO1 !== null && realO1 !== 0;
 
-      // Live score and clock (only populated when game is in progress)
-      const homeScore = isLive ? (h?.score ?? null) : null;
-      const awayScore = isLive ? (a?.score ?? null) : null;
+      // Score shown for live AND final games
+      const homeScore = (isLive||isFinal) ? (h?.score ?? null) : null;
+      const awayScore = (isLive||isFinal) ? (a?.score ?? null) : null;
       const clock  = isLive ? (e.status?.displayClock ?? null) : null;
-      const period = isLive ? (e.status?.type?.shortDetail ?? null) : null;
+      const period = (isLive||isFinal) ? (e.status?.type?.shortDetail ?? null) : null;
 
-      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, usingRealOdds, o1, oDraw, o2,
+      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, isFinal, usingRealOdds, o1, oDraw, o2,
         score: (homeScore !== null && awayScore !== null) ? {home:homeScore, away:awayScore} : null,
         clock, period };
     });
@@ -229,10 +229,9 @@ const fetchMLB = async () => {
     if(!r.ok) return [];
     const d = await r.json();
     const today = todayET();
-    const evs = (d.events||[]).filter(e =>
-      ["pre","in"].includes(e.status?.type?.state) &&
-      dateStrET(e.date) === today
-    );
+    // Include ALL of today's games: upcoming, live, and final
+    const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
+    if(!evs.length) return [];
     return evs.map(e => {
       const cs = e.competitions?.[0]?.competitors||[];
       const h = cs.find(c=>c.homeAway==="home");
@@ -241,18 +240,20 @@ const fetchMLB = async () => {
       const t2 = a?.team?.displayName||"Away";
       const abbr1 = h?.team?.abbreviation||"";
       const abbr2 = a?.team?.abbreviation||"";
-      const isLive = e.status?.type?.state === "in";
+      const state = e.status?.type?.state;
+      const isLive  = state === "in";
+      const isFinal = state === "post";
       const espnOdds = e.competitions?.[0]?.odds?.[0];
       const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
       const realO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
       const realO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
-      const o1 = (realO1&&realO1!==0)?realO1:-115; // fallback: slight home advantage
+      const o1 = (realO1&&realO1!==0)?realO1:-115;
       const o2 = (realO2&&realO2!==0)?realO2:-105;
-      const homeScore = isLive?(h?.score??null):null;
-      const awayScore = isLive?(a?.score??null):null;
-      const period = isLive?(e.status?.type?.shortDetail??null):null;
+      const homeScore = (isLive||isFinal)?(h?.score??null):null;
+      const awayScore = (isLive||isFinal)?(a?.score??null):null;
+      const period = (isLive||isFinal)?(e.status?.type?.shortDetail??null):null;
       return { id:e.id, t1, t2, abbr1, abbr2, dt:e.date, sport:"mlb",
-        o1, o2, isLive, usingRealOdds:!!(realO1&&realO1!==0),
+        o1, o2, isLive, isFinal, usingRealOdds:!!(realO1&&realO1!==0),
         score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, period };
     });
   } catch { return []; }
@@ -849,13 +850,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
               const isLive=g.isLive||false;
-              const until=!isLive&&!closed?timeUntil(g.dt):null;
+              const isFinal=g.isFinal||false;
+              const until=!isLive&&!closed&&!isFinal?timeUntil(g.dt):null;
               return(
-                <div key={g.id} style={{...S.card,marginBottom:12}}>
+                <div key={g.id} style={{...S.card,marginBottom:12,opacity:isFinal?0.8:1}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
                         {isLive&&<span style={S.liveBadge}>🔴 LIVE</span>}
+                        {isFinal&&<span style={{fontSize:9,fontWeight:800,background:"#1A1A2A",color:C.sub,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px"}}>FINAL</span>}
                         <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>WORLD CUP 2026</span>
                       </div>
                       <div style={{fontSize:10,color:C.dim}}>{g.rnd}</div>
@@ -867,11 +870,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   </div>
                   {closed&&(
                     <div style={S.closedBanner}>
-                      {isLive?"⚽ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
+                      {isFinal?"✓ Final — no more bets":isLive?"⚽ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
                     </div>
                   )}
-                  {/* LIVE SCORE */}
-                  {isLive&&g.score&&(
+                  {/* Score shown for LIVE and FINAL games */}
+                  {(isLive||isFinal)&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,fontSize:17,fontWeight:900,color:C.text}}>
                         <Flag team={g.t1} size={18}/>&nbsp;{g.score.home}
@@ -945,13 +948,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
               const isLive=g.isLive||false;
-              const until=!isLive&&!closed?timeUntil(g.dt):null;
+              const isFinal=g.isFinal||false;
+              const until=!isLive&&!closed&&!isFinal?timeUntil(g.dt):null;
               return(
-                <div key={g.id} style={{...S.card,marginBottom:12}}>
+                <div key={g.id} style={{...S.card,marginBottom:12,opacity:isFinal?0.8:1}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
                         {isLive&&<span style={S.liveBadge}>🔴 LIVE</span>}
+                        {isFinal&&<span style={{fontSize:9,fontWeight:800,background:"#1A1A2A",color:C.sub,border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px"}}>FINAL</span>}
                         <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>MLB 2026</span>
                       </div>
                       <div style={{fontSize:10,color:C.dim}}>{g.t2} @ {g.t1}</div>
@@ -961,8 +966,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
-                  {closed&&<div style={S.closedBanner}>{isLive?"⚾ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
-                  {isLive&&g.score&&(
+                  {closed&&<div style={S.closedBanner}>{isFinal?"✓ Final — no more bets":isLive?"⚾ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
+                  {(isLive||isFinal)&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,fontSize:17,fontWeight:900,color:C.text}}>
                         <MLBLogo abbr={g.abbr1} size={18}/>&nbsp;{g.score.home}
