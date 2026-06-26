@@ -144,11 +144,11 @@ const fetchESPN = async () => {
     const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
     if (!r.ok) return null;
     const d = await r.json();
-    const today = new Date().toDateString(); // "Thu Jun 25 2026"
-    // Only show games happening today (pre-game or in-progress)
+    const today = todayET(); // e.g. "2026-06-25" — always Eastern Time, regardless of user's location
+    // Only show games happening today in ET (pre-game or in-progress)
     const evs = (d.events||[]).filter(e =>
       ["pre","in"].includes(e.status?.type?.state) &&
-      new Date(e.date).toDateString() === today
+      dateStrET(e.date) === today
     );
     if (!evs.length) return []; // no games today — return empty, not fallback
     return evs.map(e => {
@@ -637,7 +637,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading}){
                   {ODDS_API_KEY?"LIVE ODDS — THE ODDS API":"ODDS — FIFA WORLD CUP 2026"}
                 </span>
               </div>
-              <span style={{fontSize:10,color:C.dim}}>updates every 2 min</span>
+              <span style={{fontSize:10,color:C.dim}}>updates every 2 min · All times ET</span>
             </div>
             {wcLoading?(
               <div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚽</div><div style={{fontSize:13}}>Loading odds…</div></div>
