@@ -317,6 +317,15 @@ const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
+const timeUntil = dt => {
+  const diff = new Date(dt) - new Date();
+  if(diff <= 0) return null;
+  const mins = Math.floor(diff/60000);
+  if(mins < 2) return "Starting now";
+  if(mins < 60) return `Starts in ${mins}m`;
+  const h = Math.floor(mins/60), m = mins%60;
+  return `Starts in ${h}h${m>0?` ${m}m`:""}`;
+};
 
 const TERMS = [
   {n:"1",t:"Don't leak outside of MFL. What happens in MFL Betzone stays in MFL Betzone. Do not share bet details, balances, or any platform info outside the group."},
@@ -826,35 +835,39 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
                 <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
-                  {ODDS_API_KEY ? "LIVE ODDS — THE ODDS API" : wc.some(g=>g.usingRealOdds) ? "LIVE ODDS — ESPN BET" : "ODDS — FIFA WORLD CUP 2026"}
+                  {wc.some(g=>g.usingRealOdds)||ODDS_API_KEY ? "LIVE ODDS — ESPN BET" : "ODDS — WORLD CUP 2026"}
                 </span>
               </div>
-              <span style={{fontSize:10,color:C.dim}}>updates every 2 min · All times ET</span>
+              <span style={{fontSize:10,color:C.dim}}>All times ET</span>
             </div>
             {wcLoading?(
               <div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚽</div><div style={{fontSize:13}}>Loading odds…</div></div>
-            ):wc.length===0?<Empty icon="📅" title="No games today" sub="Check back on matchdays — odds update every 2 min when games are scheduled"/>
+            ):wc.length===0?<Empty icon="📅" title="No games today" sub="Check back on matchdays — odds update automatically"/>
             :wc.map(g=>{
               const pick=picks[g.id];
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
               const isLive=g.isLive||false;
+              const until=!isLive&&!closed?timeUntil(g.dt):null;
               return(
                 <div key={g.id} style={{...S.card,marginBottom:12}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                        {isLive&&<span style={{fontSize:9,fontWeight:800,letterSpacing:"0.08em",background:"#E5393518",color:"#E53935",border:"1px solid #E5393533",borderRadius:4,padding:"2px 6px"}}>🔴 LIVE</span>}
-                        <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>FIFA WORLD CUP 2026</span>
+                        {isLive&&<span style={S.liveBadge}>🔴 LIVE</span>}
+                        <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>WORLD CUP 2026</span>
                       </div>
                       <div style={{fontSize:10,color:C.dim}}>{g.rnd}</div>
                     </div>
-                    <div style={{fontSize:10,color:C.dim,textAlign:"right"}}>{fmtDt(g.dt)}</div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:10,color:C.dim}}>{fmtDt(g.dt)}</div>
+                      {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
+                    </div>
                   </div>
                   {closed&&(
-                    <div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10}}>
-                      {isLive?"⚽ Game in progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
+                    <div style={S.closedBanner}>
+                      {isLive?"⚽ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before kickoff"}
                     </div>
                   )}
                   {/* LIVE SCORE */}
@@ -917,37 +930,38 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             <div>
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <span style={{width:7,height:7,borderRadius:"50%",background:"#C9102B",display:"inline-block",flexShrink:0}}/>
-                <span style={{fontSize:11,fontWeight:700,color:"#C9102B",letterSpacing:"0.04em"}}>
-                  {mlb.some(g=>g.usingRealOdds)?"LIVE ODDS — ESPN BET":"MLB 2026 — MONEYLINES"}
+                <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
+                <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
+                  {mlb.some(g=>g.usingRealOdds)?"LIVE ODDS — ESPN BET":"ODDS — MLB 2026"}
                 </span>
               </div>
-              <span style={{fontSize:10,color:C.dim}}>2-way · All times ET</span>
+              <span style={{fontSize:10,color:C.dim}}>All times ET</span>
             </div>
-            {mlbLoading?<div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚾</div><div style={{fontSize:13}}>Loading MLB games…</div></div>
-            :mlb.length===0?<Empty icon="⚾" title="No MLB games today" sub="Check back tomorrow — games update automatically"/>
+            {mlbLoading?<div style={{textAlign:"center",padding:"44px",color:C.dim}}><div style={{fontSize:28,marginBottom:8}}>⚾</div><div style={{fontSize:13}}>Loading odds…</div></div>
+            :mlb.length===0?<Empty icon="⚾" title="No MLB games today" sub="Check back tomorrow — updates automatically"/>
             :mlb.map(g=>{
               const pick=picks[g.id];
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
               const isLive=g.isLive||false;
+              const until=!isLive&&!closed?timeUntil(g.dt):null;
               return(
                 <div key={g.id} style={{...S.card,marginBottom:12}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                        {isLive&&<span style={{fontSize:9,fontWeight:800,background:"#E5393518",color:"#E53935",border:"1px solid #E5393533",borderRadius:4,padding:"2px 6px"}}>🔴 LIVE</span>}
-                        <span style={{fontSize:10,fontWeight:700,color:"#C9102B",letterSpacing:"0.04em"}}>MLB 2026</span>
-                        {g.usingRealOdds&&<span style={{fontSize:9,fontWeight:600,color:C.green}}>ESPN ✓</span>}
+                        {isLive&&<span style={S.liveBadge}>🔴 LIVE</span>}
+                        <span style={{fontSize:10,fontWeight:700,color:C.gold,letterSpacing:"0.04em"}}>MLB 2026</span>
                       </div>
-                      <div style={{fontSize:10,color:C.dim}}>{fmtDt(g.dt)}</div>
+                      <div style={{fontSize:10,color:C.dim}}>{g.t2} @ {g.t1}</div>
                     </div>
-                    <div style={{fontSize:10,color:C.dim,textAlign:"right"}}>{g.t2} @ {g.t1}</div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:10,color:C.dim}}>{fmtDt(g.dt)}</div>
+                      {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
+                    </div>
                   </div>
-                  {closed&&<div style={{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10}}>
-                    {isLive?"⚾ Game in progress — odds shown, no new bets":"🔒 Betting closed"}
-                  </div>}
+                  {closed&&<div style={S.closedBanner}>{isLive?"⚾ In progress — odds shown, no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
                   {isLive&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,fontSize:17,fontWeight:900,color:C.text}}>
@@ -955,10 +969,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         <span style={{color:C.dim,fontSize:13,fontWeight:400,margin:"0 4px"}}>—</span>
                         {g.score.away}&nbsp;<MLBLogo abbr={g.abbr2} size={18}/>
                       </div>
-                      <div style={{fontSize:11,fontWeight:700,color:C.green,background:"#00E67618",padding:"3px 10px",borderRadius:5}}>{g.period||"● LIVE"}</div>
+                      <div style={{fontSize:11,fontWeight:700,color:C.green,background:"#00E67618",padding:"3px 10px",borderRadius:5,letterSpacing:"0.04em"}}>{g.period||"● LIVE"}</div>
                     </div>
                   )}
-                  {/* 2-way moneyline — no draw in baseball */}
                   <div style={{display:"flex",gap:8}}>
                     <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
                       <MLBLogo abbr={g.abbr1} size={30}/>
@@ -1003,6 +1016,14 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         {/* ── MY BETS (user) ── */}
         {tab==="mybets"&&!isAdmin&&(
           <div>
+            {/* Bet type selector */}
+            <div style={{display:"flex",gap:8,marginBottom:16}}>
+              {[{id:"singles",label:"Singles"},{id:"parlays",label:"Parlays",soon:true}].map(t=>(
+                <button key={t.id} style={{borderRadius:20,padding:"8px 18px",border:`1px solid ${t.id==="singles"?C.gold:C.border}`,background:t.id==="singles"?C.gold:C.card,color:t.id==="singles"?C.bg:C.dim,fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+                  {t.label}{t.soon&&<span style={{fontSize:9,fontWeight:700,background:"#FF980022",color:"#FF9800",border:"1px solid #FF980033",borderRadius:3,padding:"1px 5px"}}>SOON</span>}
+                </button>
+              ))}
+            </div>
             <ST title="My Bets" sub="All bets are final — no refunds"/>
             {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Head to Soccer to place a bet"/>
             :bets.map(bet=>(
@@ -1371,6 +1392,8 @@ const S={
   stakeW:{display:"flex",alignItems:"center",background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"11px 14px"},
   stakeInp:{background:"none",border:"none",color:C.text,fontSize:16,fontWeight:700,width:"100%",outline:"none"},
   badge:{fontSize:9,fontWeight:700,letterSpacing:"0.08em",background:"#1C1C2A",color:C.dim,padding:"2px 7px",borderRadius:4},
+  liveBadge:{fontSize:9,fontWeight:800,letterSpacing:"0.08em",background:"#E5393518",color:"#E53935",border:"1px solid #E5393533",borderRadius:4,padding:"2px 6px"},
+  closedBanner:{background:"#120808",border:"1px solid #E5393522",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#E53935",fontWeight:600,textAlign:"center",marginBottom:10},
   btn:{background:C.gold,color:C.bg,border:"none",borderRadius:10,padding:"12px 16px",fontSize:12,fontWeight:800,cursor:"pointer",letterSpacing:"0.04em",whiteSpace:"nowrap"},
   ghost:{background:"none",border:`1px solid ${C.border}`,color:C.sub,borderRadius:10,padding:"12px 16px",fontSize:13,fontWeight:600,cursor:"pointer",textAlign:"center"},
   tabTog:{flex:1,background:"none",border:"none",color:C.dim,padding:"11px",fontSize:13,fontWeight:700,cursor:"pointer",borderRadius:8},
