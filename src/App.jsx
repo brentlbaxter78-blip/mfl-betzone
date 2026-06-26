@@ -40,38 +40,61 @@ const db = {
 
 // ─── STABLE ODDS (module-level cache, resets every 2 min to match refresh) ───
 let _oddsCache = {}, _cacheTime = 0;
-const ODDS_TTL = 2 * 60 * 1000; // sync with refresh interval — odds update every 2 min
+const ODDS_TTL = 2 * 60 * 1000;
 const VIG = 0.10;
+const toAML = p => {
+  const vp = p * (1 + VIG);
+  return vp >= 0.5 ? -Math.round(vp/(1-vp)*100) : +Math.round((1-vp)/vp*100);
+};
 
+// ── World Cup 3-way odds ──────────────────────────────────────────────────────
 const odds3 = (t1, t2) => {
   const s1 = STR[t1]||1100, s2 = STR[t2]||1100;
-  const D = s1 - s2; // pure strength difference — no random jitter, odds are deterministic
-  // H2H win probability via logistic curve
+  const D = s1 - s2;
   const h2h = 0.5 + 0.5 * Math.tanh(D / 900);
-  // Draw probability: ~27% for even match, falls with mismatch
   const drawP = Math.max(0.10, 0.27 - Math.abs(D) / 6000);
-  // True 3-way probabilities
-  const p1 = h2h * (1 - drawP);       // stronger team win
-  const pD = drawP;
-  const p2 = (1 - h2h) * (1 - drawP); // weaker team win
-  // Convert to American moneyline with 10% vig applied
-  const toAML = p => {
-    const vp = p * (1 + VIG); // implied probability after vig
-    return vp >= 0.5
-      ? -Math.round(vp / (1 - vp) * 100)   // favorite (negative)
-      : +Math.round((1 - vp) / vp * 100);   // underdog (positive)
-  };
+  const p1 = h2h * (1 - drawP), pD = drawP, p2 = (1 - h2h) * (1 - drawP);
   return { o1: toAML(p1), oDraw: toAML(pD), o2: toAML(p2) };
 };
 
 const stableOdds = (gid, t1, t2) => {
   const now = Date.now();
-  // Only expire cache for games not yet closed — once betting locks, odds are frozen
   if (!_oddsCache[gid]) {
     if (now - _cacheTime > ODDS_TTL) { _oddsCache = {}; _cacheTime = now; }
     _oddsCache[gid] = odds3(t1, t2);
   }
   return _oddsCache[gid];
+};
+
+// ── MLB 2-way odds (team ratings 900-1200 range for realistic moneylines) ──────
+const MLB_STR = {
+  "Los Angeles Dodgers":1200,"Houston Astros":1180,"New York Yankees":1170,
+  "Atlanta Braves":1150,"Philadelphia Phillies":1140,"Texas Rangers":1120,
+  "Baltimore Orioles":1110,"Milwaukee Brewers":1100,"San Diego Padres":1095,
+  "Arizona Diamondbacks":1090,"Cleveland Guardians":1085,"Minnesota Twins":1080,
+  "Tampa Bay Rays":1075,"Boston Red Sox":1070,"New York Mets":1060,
+  "Seattle Mariners":1055,"Chicago Cubs":1050,"San Francisco Giants":1040,
+  "Toronto Blue Jays":1040,"St. Louis Cardinals":1030,"Detroit Tigers":1020,
+  "Cincinnati Reds":1010,"Los Angeles Angels":1000,"Pittsburgh Pirates":980,
+  "Kansas City Royals":975,"Miami Marlins":960,"Washington Nationals":950,
+  "Oakland Athletics":940,"Colorado Rockies":930,"Chicago White Sox":900,
+};
+let _mlbCache = {}, _mlbCacheTime = 0;
+const mlbOdds = (t1, t2) => { // t1 = home team (+30 home field advantage)
+  const s1 = (MLB_STR[t1]||1050) + 30;
+  const s2 = MLB_STR[t2]||1050;
+  const D = s1 - s2;
+  // Shallow curve — MLB odds are typically not as extreme as other sports
+  const p1 = Math.min(0.76, Math.max(0.24, 0.5 + 0.25 * Math.tanh(D / 350)));
+  return { o1: toAML(p1), o2: toAML(1 - p1) };
+};
+const mlbStableOdds = (gid, t1, t2) => {
+  const now = Date.now();
+  if (!_mlbCache[gid]) {
+    if (now - _mlbCacheTime > ODDS_TTL) { _mlbCache = {}; _mlbCacheTime = now; }
+    _mlbCache[gid] = mlbOdds(t1, t2);
+  }
+  return _mlbCache[gid];
 };
 
 // ─── WORLD CUP ───────────────────────────────────────────────────────────────
@@ -99,56 +122,72 @@ const NAME_MAP = {
 };
 const normName = n => NAME_MAP[n] || n;
 
-// ── THE ODDS API (real live odds) ─────────────────────────────────────────────
-const fetchLiveOdds = async () => {
+// ── THE ODDS API — real FanDuel/DraftKings/Vegas odds for all sports ──────────
+// Get a FREE key at the-odds-api.com (500 req/month, no credit card needed)
+// Odds cached 10 min so free tier lasts all month even with many users
+let _apiCache = {}; // { sportKey: { data, ts } }
+const API_ODDS_TTL = 30 * 60 * 1000; // 30 min
+
+const ODDS_SPORT_KEYS = {
+  soccer: "soccer_fifa_world_cup",
+  mlb:    "baseball_mlb",
+  nfl:    "americanfootball_nfl",
+  nba:    "basketball_nba",
+  ufc:    "mma_mixed_martial_arts",
+};
+
+const fetchOddsAPI = async (sport) => {
   if (!ODDS_API_KEY) return null;
+  const key = ODDS_SPORT_KEYS[sport];
+  if (!key) return null;
+  const now = Date.now();
+  // Return cached data if fresh
+  if (_apiCache[key] && now - _apiCache[key].ts < API_ODDS_TTL) return _apiCache[key].data;
   try {
     const r = await fetch(
-      `https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`
+      `https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`
     );
     if (!r.ok) return null;
-    const games = await r.json();
-    if (!Array.isArray(games) || !games.length) return null;
-    return games.map(g => {
-      // Use first available bookmaker
-      const bm = g.bookmakers?.[0];
-      const mkt = bm?.markets?.find(m => m.key === "h2h");
-      if (!mkt) return null;
-      const t1 = normName(g.home_team);
-      const t2 = normName(g.away_team);
-      const outs = mkt.outcomes || [];
-      const home  = outs.find(o => normName(o.name) === t1 || o.name === g.home_team);
-      const away  = outs.find(o => normName(o.name) === t2 || o.name === g.away_team);
-      const draw  = outs.find(o => o.name === "Draw");
-      const fb    = stableOdds(g.id, t1, t2);
-      const now   = new Date();
-      const start = new Date(g.commence_time);
-      const isLive = now >= start;
-      return {
-        id: g.id,
-        t1, t2,
-        dt: g.commence_time,
-        rnd: "FIFA World Cup 2026",
-        isLive,
-        o1:    home?.price  ?? fb.o1,
-        oDraw: draw?.price  ?? fb.oDraw,
-        o2:    away?.price  ?? fb.o2,
-      };
-    }).filter(Boolean);
-  } catch(e) {
-    console.warn("Odds API unavailable:", e.message);
-    return null;
-  }
+    const data = await r.json();
+    if (!Array.isArray(data)) return null;
+    _apiCache[key] = { data, ts: now };
+    return data;
+  } catch { return null; }
+};
+
+// Extract odds for a specific game from Odds API response
+// Prefers FanDuel → DraftKings → BetMGM → Caesars → first available
+const getBookOdds = (apiGames, t1, t2) => {
+  if (!apiGames?.length) return null;
+  const match = apiGames.find(g => {
+    const ht = normName(g.home_team), at = normName(g.away_team);
+    return (ht===t1||g.home_team===t1) && (at===t2||g.away_team===t2);
+  });
+  if (!match) return null;
+  const BOOK_PREF = ["fanduel","draftkings","betmgm","caesars","williamhill_us","bovada"];
+  const bm = BOOK_PREF.reduce((found,k)=>found||match.bookmakers?.find(b=>b.key===k),null)
+             || match.bookmakers?.[0];
+  if (!bm) return null;
+  const mkt = bm.markets?.find(m => m.key === "h2h");
+  if (!mkt) return null;
+  const outs = mkt.outcomes||[];
+  const home = outs.find(o => normName(o.name)===t1 || o.name===t1);
+  const away = outs.find(o => normName(o.name)===t2 || o.name===t2);
+  const draw = outs.find(o => o.name==="Draw");
+  return { o1: home?.price??null, o2: away?.price??null, oDraw: draw?.price??null, book: bm.title };
 };
 
 // ── ESPN FALLBACK (real game schedule + real ESPN odds when available) ─────────
 const fetchESPN = async () => {
   try {
-    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
-    if (!r.ok) return null;
-    const d = await r.json();
+    // Fetch schedule+scores from ESPN and real odds from Odds API simultaneously
+    const [espnRes, apiGames] = await Promise.all([
+      fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"),
+      fetchOddsAPI("soccer"),
+    ]);
+    if (!espnRes.ok) return null;
+    const d = await espnRes.json();
     const today = todayET();
-    // Include ALL of today's games: upcoming, live, and final
     const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
     if (!evs.length) return [];
     return evs.map(e => {
@@ -160,45 +199,44 @@ const fetchESPN = async () => {
       const desc    = e.status?.type?.description?.toLowerCase()||"";
       const isLive  = state === "in";
       const isFinal = state === "post";
-      const isPostponed = state === "postponed" || desc.includes("postponed") || desc.includes("canceled") || desc.includes("suspended");
+      const isPostponed = state==="postponed"||desc.includes("postponed")||desc.includes("canceled")||desc.includes("suspended");
 
-      // Try to get real odds from ESPN's odds data
+      // Priority: Odds API (FanDuel/DraftKings) → ESPN odds → calculated fallback
+      const bookOdds = getBookOdds(apiGames, t1, t2);
+      const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
       const espnOdds = e.competitions?.[0]?.odds?.[0];
-      const parseML = v => (v && typeof v === "object") ? (v.moneyLine ?? null) : (v ?? null);
-      const realO1   = parseML(espnOdds?.homeTeamOdds?.moneyLine ?? espnOdds?.moneylineHome);
-      const realO2   = parseML(espnOdds?.awayTeamOdds?.moneyLine ?? espnOdds?.moneylineAway);
-      // ESPN's drawOdds can be {moneyLine: 310} OR a plain number — handle both
-      const realDraw = parseML(espnOdds?.drawOdds?.moneyLine ?? espnOdds?.drawOdds ?? espnOdds?.draw?.moneyLine);
+      const eO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
+      const eO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
+      const eDraw = parseML(espnOdds?.drawOdds?.moneyLine??espnOdds?.drawOdds??espnOdds?.draw?.moneyLine);
+      const fb = stableOdds(e.id, t1, t2);
 
-      // Use ESPN real odds if available, otherwise fall back to calculated
-      const fallback = stableOdds(e.id, t1, t2);
-      const o1    = (realO1    !== null && realO1    !== 0) ? realO1    : fallback.o1;
-      const o2    = (realO2    !== null && realO2    !== 0) ? realO2    : fallback.o2;
-      const oDraw = (realDraw  !== null && realDraw  !== 0) ? realDraw  : fallback.oDraw;
-      // Save real odds before game ends so they persist on the final score card
-      if(realO1&&realO1!==0) saveOdds(e.id,{o1,o2,oDraw});
-      const usingRealOdds = realO1 !== null && realO1 !== 0;
+      let o1 = bookOdds?.o1 ?? (eO1||null) ?? fb.o1;
+      let o2 = bookOdds?.o2 ?? (eO2||null) ?? fb.o2;
+      let oDraw = bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw;
+      const book = bookOdds?.book || (eO1?"ESPN BET":null);
+      const usingRealOdds = !!(bookOdds?.o1||eO1);
 
-      // Score shown for live AND final games
-      const homeScore = (isLive||isFinal) ? (h?.score ?? null) : null;
-      const awayScore = (isLive||isFinal) ? (a?.score ?? null) : null;
-      const clock  = isLive ? (e.status?.displayClock ?? null) : null;
-      const period = (isLive||isFinal) ? (e.status?.type?.shortDetail ?? null) : null;
+      // Persist odds before game ends so final score card shows real pre-game lines
+      if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
+      else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
 
-      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026", isLive, isFinal, isPostponed, usingRealOdds, o1, oDraw, o2,
-        score: (homeScore !== null && awayScore !== null) ? {home:homeScore, away:awayScore} : null,
-        clock, period };
+      const homeScore = (isLive||isFinal)?(h?.score??null):null;
+      const awayScore = (isLive||isFinal)?(a?.score??null):null;
+      const clock  = isLive?(e.status?.displayClock??null):null;
+      const period = (isLive||isFinal)?(e.status?.type?.shortDetail??null):null;
+
+      return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026",
+        isLive, isFinal, isPostponed, usingRealOdds, book, o1, oDraw, o2,
+        score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, clock, period };
     });
   } catch { return null; }
 };
 
-// Master fetch: live odds API → ESPN today → no games message
+// WC = ESPN schedule + scores + Odds API odds (all handled inside fetchESPN now)
 const fetchWC = async () => {
-  const live = await fetchLiveOdds();
-  if (live?.length) return live;
   const espn = await fetchESPN();
-  if (espn === null) return FB;
-  return espn;
+  if (espn === null) return FB; // ESPN totally failed → hardcoded fallback
+  return espn; // empty [] = no games today, that's fine
 };
 
 // Auto-fetch final scores from ESPN for completed games — used to pre-fill settle scores
@@ -226,14 +264,16 @@ const fetchFinalScores = async () => {
   } catch { return {}; }
 };
 
-// ── MLB (real odds + scores from ESPN) ────────────────────────────────────────
+// ── MLB — ESPN for schedule/scores, Odds API for real odds ────────────────────
 const fetchMLB = async () => {
   try {
-    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard");
-    if(!r.ok) return [];
-    const d = await r.json();
+    const [espnRes, apiGames] = await Promise.all([
+      fetch("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard"),
+      fetchOddsAPI("mlb"),
+    ]);
+    if(!espnRes.ok) return [];
+    const d = await espnRes.json();
     const today = todayET();
-    // Include ALL of today's games: upcoming, live, and final
     const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
     if(!evs.length) return [];
     return evs.map(e => {
@@ -248,22 +288,28 @@ const fetchMLB = async () => {
       const desc  = e.status?.type?.description?.toLowerCase()||"";
       const isLive      = state === "in";
       const isFinal     = state === "post";
-      const isPostponed = state === "postponed" || desc.includes("postponed") || desc.includes("canceled") || desc.includes("suspended");
-      const espnOdds = e.competitions?.[0]?.odds?.[0];
-      const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
-      const realO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
-      const realO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
-      // If ESPN has real odds, save them so they're available after the game ends
-      if(realO1&&realO1!==0) saveOdds(e.id,{o1:realO1,o2:realO2});
-      // After game ends ESPN drops the odds — load our saved pre-game odds
+      const isPostponed = state==="postponed"||desc.includes("postponed")||desc.includes("canceled")||desc.includes("suspended");
+
+      // Priority: Odds API (FanDuel/DraftKings) → saved pre-game odds → calculated fallback
+      const bookOdds = getBookOdds(apiGames, t1, t2);
+      const fb = mlbStableOdds(e.id, t1, t2);
+      const usingRealOdds = !!bookOdds?.o1;
+
+      let o1 = bookOdds?.o1 ?? null;
+      let o2 = bookOdds?.o2 ?? null;
+      const book = bookOdds?.book || null;
+
+      // Persist real odds so they survive after game ends (ESPN & Odds API both drop odds post-game)
+      if(usingRealOdds) saveOdds(e.id,{o1,o2});
       const saved = loadOdds(e.id);
-      const o1 = (realO1&&realO1!==0)?realO1:(saved?.o1??-115);
-      const o2 = (realO2&&realO2!==0)?realO2:(saved?.o2??-105);
+      o1 = o1 ?? saved?.o1 ?? fb.o1;
+      o2 = o2 ?? saved?.o2 ?? fb.o2;
+
       const homeScore = (isLive||isFinal)?(h?.score??null):null;
       const awayScore = (isLive||isFinal)?(a?.score??null):null;
       const period = (isLive||isFinal)?(e.status?.type?.shortDetail??null):null;
       return { id:e.id, t1, t2, abbr1, abbr2, dt:e.date, sport:"mlb",
-        o1, o2, isLive, isFinal, isPostponed, usingRealOdds:!!(realO1&&realO1!==0),
+        o1, o2, isLive, isFinal, isPostponed, usingRealOdds, book,
         score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, period };
     });
   } catch { return []; }
@@ -537,6 +583,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [expanded,setExpanded]=useState(null); const [showPw,setShowPw]=useState({});
   const [betNotifs,setBetNotifs]=useState([]);
   const [settleScores,setSettleScores]=useState({});
+  const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [confirm,setConfirm]=useState(null);
 
@@ -550,17 +597,18 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         setUsers((u||[]).filter(x=>!x.is_admin));
         setAllBets(b||[]); setPend(p||[]); setAllTxs(a||[]); setHouse(h?.[0]||null);
         // Auto-fill score field for any pending bet whose game has finished
+        const autoFills={};const newAutoIds=new Set();
+        (pb||[]).forEach(bet=>{
+          const leg=bet.legs?.[0];if(!leg?.matchup)return;
+          const [t1,t2]=(leg.matchup||"").split(" vs ").map(s=>s.trim());
+          const score=finalScores[`${t1}|${t2}`]||finalScores[`${t2}|${t1}`];
+          if(score){autoFills[bet.id]=score;newAutoIds.add(bet.id);}
+        });
+        setAutoFilledIds(p=>new Set([...p,...newAutoIds]));
         setSettleScores(prev=>{
-          const auto={};
-          (pb||[]).forEach(bet=>{
-            if(prev[bet.id]) return; // don't overwrite manually entered scores
-            const leg=bet.legs?.[0];
-            if(!leg?.matchup) return;
-            const [t1,t2]=(leg.matchup||"").split(" vs ").map(s=>s.trim());
-            const score=finalScores[`${t1}|${t2}`]||finalScores[`${t2}|${t1}`];
-            if(score) auto[bet.id]=score;
-          });
-          return{...auto,...prev}; // manual entries always win
+          const merged={...prev};
+          Object.entries(autoFills).forEach(([id,s])=>{if(!prev[id])merged[id]=s;});
+          return merged;
         });
       }else{
         const [u,b,t,us,ab]=await Promise.all([db.getUser(session.userId),db.myBets(session.userId),db.myTxs(session.userId),db.allUsers(),db.allBets()]);
@@ -675,28 +723,43 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const a=parseFloat(cash);
     if(!a||a<=0)return showToast("Enter an amount","error");
     if(a<10)return showToast("Minimum withdrawal is $10","error");
-    if(!Number.isInteger(a))return showToast("Must be a whole dollar amount — no cents (e.g. $10, $15, $20)","error");
+    if(!Number.isInteger(a))return showToast("Whole dollars only — no cents (e.g. $10, $20)","error");
     const maxWithdraw=Math.floor(user.balance);
-    if(maxWithdraw<10)return showToast(`Your balance (₿${(user.balance||0).toFixed(2)}) is too low — minimum withdrawal is $10`,"error");
-    if(a>maxWithdraw)return showToast(`Max you can withdraw is $${maxWithdraw} — whole dollars only, cents stay in your account`,"error");
-    try{await db.addTx({user_id:session.userId,type:"withdraw",amount:a,status:"pending"});setCash("");showToast(`$${a} withdrawal requested! Go see Brent.`);await load();}catch(e){showToast("Error","error");}
+    if(maxWithdraw<10)return showToast(`Balance (₿${(user.balance||0).toFixed(2)}) is too low — minimum $10`,"error");
+    if(a>maxWithdraw)return showToast(`Max you can withdraw is $${maxWithdraw}`,"error");
+    try{
+      // Deduct immediately so they can't double-request while pending
+      await db.patchUser(session.userId,{balance:+(user.balance-a).toFixed(2)});
+      await db.addTx({user_id:session.userId,type:"withdraw",amount:a,status:"pending"});
+      setCash("");showToast(`$${a} withdrawal requested — go see Brent to collect`);await load();
+    }catch(e){showToast("Error","error");}
   };
   const togglePrivacy=async()=>{
     try{await db.patchUser(session.userId,{privacy_public:!user.privacy_public});await load();showToast(user.privacy_public?"Stats now private":"Stats now public");}catch(e){}
   };
   const approve=async txId=>{
-    const tx=[...allTxs,...pendTxs].find(t=>t.id===txId);const u=users.find(x=>x.id===tx?.user_id);if(!tx||!u)return;
-    try{await db.patchTx(txId,{status:"approved"});
-      const upd={balance:+(u.balance+(tx.type==="deposit"?tx.amount:0)).toFixed(2)};
-      if(tx.type==="deposit"){upd.cash_in=+((u.cash_in||0)+tx.amount).toFixed(2);
-        // Deposit: player's balance increases but house already collected stake separately, just track cash_in
-      }else{upd.cash_out=+((u.cash_out||0)+tx.amount).toFixed(2);}
-      await db.patchUser(u.id,upd);showToast("Approved ✓");await load();
+    const tx=allTxs.find(t=>t.id===txId);
+    const u=users.find(x=>x.id===tx?.user_id);
+    if(!tx||!u)return;
+    try{
+      await db.patchTx(txId,{status:"approved"});
+      if(tx.type==="deposit"){
+        // Deposit approved: add to player balance and track cash_in
+        await db.patchUser(u.id,{balance:+(u.balance+tx.amount).toFixed(2),cash_in:+((u.cash_in||0)+tx.amount).toFixed(2)});
+      }else{
+        // Withdrawal approved: balance already deducted when requested — just track cash_out
+        await db.patchUser(u.id,{cash_out:+((u.cash_out||0)+tx.amount).toFixed(2)});
+      }
+      showToast("Approved ✓");await load();
     }catch(e){showToast("Error","error");}
   };
   const reject=async txId=>{
-    const tx=[...allTxs,...pendTxs].find(t=>t.id===txId);const u=users.find(x=>x.id===tx?.user_id);if(!tx)return;
-    try{await db.patchTx(txId,{status:"rejected"});
+    const tx=allTxs.find(t=>t.id===txId);
+    const u=users.find(x=>x.id===tx?.user_id);
+    if(!tx)return;
+    try{
+      await db.patchTx(txId,{status:"rejected"});
+      // Withdrawal rejected: refund the balance that was deducted at request time
       if(tx.type==="withdraw"&&u)await db.patchUser(u.id,{balance:+(u.balance+tx.amount).toFixed(2)});
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
@@ -765,7 +828,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"14px",marginBottom:14}}>
               <div style={{fontSize:10,color:C.dim,fontWeight:700,letterSpacing:"0.06em",marginBottom:6}}>{confirm.sport==="mlb"?"MLB 2026":"FIFA WORLD CUP 2026"}</div>
               <div style={{fontSize:13,color:C.sub,marginBottom:8}}>{confirm.matchup}</div>
-              <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick: <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:5}}><Flag team={confirm.team} size={16}/>{confirm.team}</strong> <span style={{color:C.dim,fontSize:12}}>({fmtO(confirm.odds)})</span></div>
+              <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick:&nbsp;
+                <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:5}}>
+                  {confirm.sport==="mlb"
+                    ?<MLBLogo abbr={findGame(confirm.gid)?.[findGame(confirm.gid)?.t1===confirm.team?"abbr1":"abbr2"]} size={16}/>
+                    :<Flag team={confirm.team} size={16}/>}
+                  {confirm.team}
+                </strong>
+                <span style={{color:C.dim,fontSize:12}}>&nbsp;({fmtO(confirm.odds)})</span>
+              </div>
               <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:`1px solid ${C.border}`}}>
                 <div style={{flex:1,padding:"10px",background:C.card,textAlign:"center"}}><div style={{fontSize:10,color:C.dim,marginBottom:2}}>STAKE</div><div style={{fontSize:17,fontWeight:800,color:C.text}}>₿{confirm.stake}</div></div>
                 <div style={{width:1,background:C.border}}/>
@@ -800,17 +871,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 :won
                   ?<div style={{fontSize:22,fontWeight:800,color:C.gold,marginBottom:16}}>+₿{payout.toFixed(2)}</div>
                   :<div style={{fontSize:16,color:C.sub,marginBottom:16}}>−₿{bet.stake}</div>}
-              <div style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px 16px",marginBottom:16,textAlign:"left"}}>
+              {!cancelled&&<div style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px 16px",marginBottom:16,textAlign:"left"}}>
                 <div style={{fontSize:11,color:C.dim,fontWeight:600,letterSpacing:"0.06em",marginBottom:6}}>BET DETAILS</div>
                 <div style={{fontSize:13,color:C.sub,marginBottom:4}}>{leg?.matchup}</div>
-                <div style={{fontSize:14,color:C.text,marginBottom:leg?.result?8:0}}>
-                  Pick: <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:4}}>
-                    <Flag team={leg?.fighter} size={14}/>{leg?.fighter}
+                <div style={{fontSize:14,color:C.text,marginBottom:leg?.result?8:0,display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                  Pick:&nbsp;
+                  <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:4}}>
+                    {leg?.sport==="mlb"?<span style={{fontSize:14}}>⚾</span>:<Flag team={leg?.fighter} size={14}/>}
+                    {leg?.fighter}
                   </strong>
-                  <span style={{color:C.dim,marginLeft:6}}>({fmtO(leg?.odds)})</span>
+                  <span style={{color:C.dim}}>({fmtO(leg?.odds)})</span>
                 </div>
                 {leg?.result&&(
-                  <div style={{background:C.card,borderRadius:8,padding:"8px 12px",fontSize:14,fontWeight:700,color:C.text}}>
+                  <div style={{background:C.card,borderRadius:8,padding:"8px 12px",fontSize:14,fontWeight:700,color:C.text,marginTop:8}}>
                     Final Score: {leg.result}
                   </div>
                 )}
@@ -818,7 +891,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <span>Staked <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
                   <span>{won?"Profit":"Loss"} <strong style={{color:won?C.green:"#E53935"}}>{won?"+":"-"}₿{won?bet.potential_win.toFixed(2):bet.stake}</strong></span>
                 </div>
-              </div>
+              </div>}
               <button style={{...S.btn,width:"100%",padding:"15px",background:cancelled?"#FF9800":won?C.green:C.gold}} onClick={()=>dismissNotif(bet.id)}>
                 {betNotifs.length>1?`Next (${betNotifs.length-1} more)`:"Got it!"}
               </button>
@@ -890,7 +963,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
                 <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
-                  {wc.some(g=>g.usingRealOdds)||ODDS_API_KEY ? "LIVE ODDS — ESPN BET" : "ODDS — WORLD CUP 2026"}
+                  {wc.some(g=>g.usingRealOdds)
+                    ? `LIVE ODDS — ${wc.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"}`
+                    : ODDS_API_KEY ? "ODDS — LOADING..." : "ODDS — WORLD CUP 2026"}
                 </span>
               </div>
               <span style={{fontSize:10,color:C.dim}}>All times ET</span>
@@ -960,8 +1035,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
                   {pick&&!isAdmin&&!closed&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
-                      <div style={{fontSize:12,color:C.dim,marginBottom:10}}>
-                        <strong style={{color:C.gold}}>{betLabel(pick.team)}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
+                      <div style={{fontSize:12,color:C.dim,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
+                        <Flag team={pick.team} size={14}/>
+                        <strong style={{color:C.gold}}>{pick.team}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
                       </div>
                       <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
                         <div style={{...S.stakeW,flex:1}}>
@@ -989,7 +1065,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:C.green,display:"inline-block",flexShrink:0}}/>
                 <span style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.04em"}}>
-                  {mlb.some(g=>g.usingRealOdds)?"LIVE ODDS — ESPN BET":"ODDS — MLB 2026"}
+                  {mlb.some(g=>g.usingRealOdds)
+                    ? `LIVE ODDS — ${mlb.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"}`
+                    : ODDS_API_KEY ? "ODDS — LOADING..." : "ODDS — MLB 2026"}
                 </span>
               </div>
               <span style={{fontSize:10,color:C.dim}}>All times ET</span>
@@ -1048,7 +1126,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
                   {pick&&!isAdmin&&!closed&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
-                      <div style={{fontSize:12,color:C.dim,marginBottom:10}}>
+                      <div style={{fontSize:12,color:C.dim,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
+                        <MLBLogo abbr={g[g.t1===pick.team?"abbr1":"abbr2"]} size={14}/>
                         <strong style={{color:C.gold}}>{pick.team}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
                       </div>
                       <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
@@ -1086,7 +1165,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               ))}
             </div>
             <ST title="My Bets" sub="All bets are final — no refunds"/>
-            {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Head to Soccer to place a bet"/>
+            {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Go to the Bet tab to place a bet"/>
             :bets.map(bet=>(
               <div key={bet.id} style={{...S.card,marginBottom:10}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -1097,7 +1176,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <div key={i} style={{fontSize:13,color:C.sub,marginBottom:3,display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
                     <span style={{color:C.dim}}>{l.matchup}</span>
                     <span style={{color:C.text}}>→</span>
-                    <Flag team={l.fighter} size={14}/>
+                    {l.sport==="mlb"?<span style={{fontSize:13}}>⚾</span>:<Flag team={l.fighter} size={14}/>}
                     <strong style={{color:C.gold}}>{l.fighter}</strong>
                     <span style={{color:C.dim}}>({fmtO(l.odds)})</span>
                   </div>
@@ -1306,12 +1385,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {/* Score — auto-fetched from ESPN when available, editable */}
                   <div style={{position:"relative",marginBottom:8}}>
                     <input
-                      style={{...S.inp,fontSize:13,padding:"9px 12px",paddingRight:settleScores[bet.id]?"80px":"12px"}}
+                      style={{...S.inp,fontSize:13,padding:"9px 12px",paddingRight:autoFilledIds.has(bet.id)&&settleScores[bet.id]?"80px":"12px"}}
                       placeholder="Final score (auto-fills from ESPN when game ends)"
                       value={settleScores[bet.id]||""}
-                      onChange={e=>setSettleScores(p=>({...p,[bet.id]:e.target.value}))}
+                      onChange={e=>{
+                        setSettleScores(p=>({...p,[bet.id]:e.target.value}));
+                        setAutoFilledIds(p=>{const n=new Set(p);n.delete(bet.id);return n;});
+                      }}
                     />
-                    {settleScores[bet.id]&&<span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em"}}>AUTO ✓</span>}
+                    {autoFilledIds.has(bet.id)&&settleScores[bet.id]&&<span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em"}}>AUTO ✓</span>}
                   </div>
                   <div style={{display:"flex",gap:8}}>
                     <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+bet.potential_win).toFixed(2)}</button>
@@ -1418,10 +1500,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       {/* BOTTOM NAV */}
       <nav style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:C.bg,borderTop:`1px solid ${C.border}`,display:"flex",zIndex:100,paddingBottom:"env(safe-area-inset-bottom)"}}>
         {TABS.map(t=>{
-          const active=tab===t.id; const red=isAdmin&&t.id==="admin";
+          const active=tab===t.id;
           return(
-            <button key={t.id} style={{flex:1,background:"none",border:"none",color:active?(red?"#E53935":C.gold):C.dim,padding:"8px 4px 11px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative"}} onClick={()=>setTab(t.id)}>
-              {active&&<div style={{position:"absolute",top:0,left:"25%",width:"50%",height:2,background:red?"#E53935":C.gold,borderRadius:"0 0 2px 2px"}}/>}
+            <button key={t.id} style={{flex:1,background:"none",border:"none",color:active?C.gold:C.dim,padding:"8px 4px 11px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative"}} onClick={()=>setTab(t.id)}>
+              {active&&<div style={{position:"absolute",top:0,left:"25%",width:"50%",height:2,background:C.gold,borderRadius:"0 0 2px 2px"}}/>}
               <span style={{fontSize:20}}>{t.icon}</span>
               <span style={{fontSize:8,fontWeight:700,letterSpacing:"0.02em"}}>{t.label}</span>
             </button>
