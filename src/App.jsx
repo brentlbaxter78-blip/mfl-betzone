@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const SUPA_URL = "https://nuiffniijnbzzkvxxtle.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51aWZmbmlpam5ienprdnh4dGxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDA5MzgsImV4cCI6MjA5NzkxNjkzOH0.dlKFKRYwZIU_GefbPV7aDhOab5B7jGByVTAAV3uQ8C8";
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
 // ↓ Get a FREE key at the-odds-api.com (500 req/month, no credit card)
-const ODDS_API_KEY = ""; // paste your key between the quotes
+const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || ""; // set in Vercel → Settings → Environment Variables
 
 const sb = async (path, opts = {}) => {
   const { method = "GET", body, prefer = "return=representation" } = opts;
@@ -122,22 +122,17 @@ const NAME_MAP = {
 };
 const normName = n => NAME_MAP[n] || n;
 
-// ── THE ODDS API — real FanDuel/DraftKings/Vegas odds for all sports ──────────
-// Get a FREE key at the-odds-api.com (500 req/month, no credit card needed)
-// Odds cached 10 min so free tier lasts all month even with many users
-let _apiCache = {}; // kept for reference, actual cache now in localStorage
-const API_ODDS_TTL      = 60 * 60 * 1000; // 60 min normally
+// ── THE ODDS API — real FanDuel/DraftKings/Vegas odds ─────────────────────────
+// Get a FREE key at the-odds-api.com (500 req/month free, no credit card)
+// Odds cached in localStorage so page refreshes don't burn API calls
+const API_ODDS_TTL      = 60 * 60 * 1000; // 60 min — ~270 calls/month with 3 sports
 const API_ODDS_TTL_SOON = 15 * 60 * 1000; // 15 min when a game starts within 30 min
-// Cache persists in localStorage so page refreshes don't burn extra API calls
 const getOddsCache = (key, soon=false) => { try{ const s=localStorage.getItem(`mfl_ac_${key}`); const c=s?JSON.parse(s):null; const ttl=soon?API_ODDS_TTL_SOON:API_ODDS_TTL; if(c&&Date.now()-c.ts<ttl)return c.data; }catch{} return null; };
 const setOddsCache = (key,data) => { try{ localStorage.setItem(`mfl_ac_${key}`,JSON.stringify({data,ts:Date.now()})); }catch{} };
-const isImminent = dt => { const d=new Date(dt)-new Date(); return d>8*60*1000&&d<31*60*1000; }; // 8–31 min before game — last refresh lands ~8–15 min out, plenty of time to bet before 3-min close
 
 const BETTING_WINDOW_HRS = 5; // odds & betting open this many hours before game
-const isTooEarly  = dt => new Date(dt)-new Date() > BETTING_WINDOW_HRS*3600000;
-const bettingOpensAt  = dt => new Date(new Date(dt).getTime()-BETTING_WINDOW_HRS*3600000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
-const bettingClosesAt = dt => new Date(new Date(dt).getTime()-3*60000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 const ODDS_SPORT_KEYS = {
+  soccer: "soccer_fifa_world_cup",  // ← critical: must stay here for WC odds to work
   mlb:    "baseball_mlb",
   nfl:    "americanfootball_nfl",
   nba:    "basketball_nba",
@@ -185,7 +180,7 @@ const getBookOdds = (apiGames, t1, t2) => {
   return { o1: home?.price??null, o2: away?.price??null, oDraw: draw?.price??null, book: bm.title };
 };
 
-// ── ESPN FALLBACK (real game schedule + real ESPN odds when available) ─────────
+// ── World Cup — ESPN for schedule/scores, Odds API (FanDuel) for odds ──────────
 const fetchESPN = async () => {
   try {
     // Get schedule first so we can check imminence before deciding which cache TTL to use
@@ -360,7 +355,6 @@ function Flag({team,size=24}){
   if(!code||err)return<span style={{fontSize:size*0.8,lineHeight:1}}>⚽</span>;
   return<img src={`https://flagcdn.com/w40/${code}.png`} alt={team} width={Math.round(size*1.45)} height={size} style={{objectFit:"cover",borderRadius:2,display:"inline-block",verticalAlign:"middle"}} onError={()=>setErr(true)}/>;
 }
-const fl=t=>t==="Draw"?"⚖️ Draw":t; // text-only fallback for non-visual contexts
 
 // MLB team logo from ESPN's CDN
 function MLBLogo({abbr,size=26}){
@@ -380,21 +374,26 @@ const FB = [
   {id:"f8",t1:"Netherlands",t2:"Qatar",      dt:"2026-06-27T22:00:00",rnd:"Group Stage · H"},
 ].map(g=>({...g,...stableOdds(g.id,g.t1,g.t2)}));
 
-// Closes 3 minutes before game (not live betting)
-const isClosed = dt => new Date() >= new Date(new Date(dt).getTime() - 180000);
-
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-const ET = "America/New_York"; // all times run on Eastern Time
+const ET = "America/New_York";
 const fmtO = o => o>0?`+${o}`:`${o}`;
 const calcW = (s,o) => o>0?+(s*(o/100)).toFixed(2):+(s*(100/Math.abs(o))).toFixed(2);
 const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET})+" · "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"}); };
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
-const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET}); // "2026-06-25" — used for day comparison
-const todayET = () => dateStrET(new Date().toISOString()); // today's date in ET regardless of user's location
+const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET});
+const todayET = () => dateStrET(new Date().toISOString());
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
+
+// Timing — defined after ET so bettingOpensAt/bettingClosesAt can use it
+const isClosed       = dt => new Date() >= new Date(new Date(dt).getTime()-180000);
+const isImminent     = dt => { const d=new Date(dt)-new Date(); return d>8*60*1000&&d<31*60*1000; };
+const isTooEarly     = dt => new Date(dt)-new Date() > BETTING_WINDOW_HRS*3600000;
+const timeUntil      = dt => { const diff=new Date(dt)-new Date(); if(diff<=0)return null; const mins=Math.floor(diff/60000); if(mins<2)return"Starting now"; if(mins<60)return`Starts in ${mins}m`; const h=Math.floor(mins/60),m=mins%60; return`Starts in ${h}h${m>0?` ${m}m`:""}`; };
+const bettingOpensAt = dt => new Date(new Date(dt).getTime()-BETTING_WINDOW_HRS*3600000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
+const bettingClosesAt= dt => new Date(new Date(dt).getTime()-3*60000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 
 // Convert American moneyline to raw implied probability (before any vig)
 const mlToProb = o => o < 0 ? Math.abs(o)/(Math.abs(o)+100) : 100/(o+100);
@@ -417,18 +416,9 @@ const vigify3 = (o1, od, o2) => {
   const vig = Math.max(s-1, EXTRA_VIG);
   return { o1: toAMLRaw(p1/s*(1+vig)), oDraw: toAMLRaw(pd/s*(1+vig)), o2: toAMLRaw(p2/s*(1+vig)) };
 };
-// Persist pre-game odds so they survive after the game ends (ESPN removes odds post-game)
+// Persist pre-game odds so they survive after the game ends (Odds API drops them post-game)
 const saveOdds = (id, odds) => { try{ localStorage.setItem(`mfl_o_${id}`, JSON.stringify(odds)); }catch{} };
 const loadOdds = (id) => { try{ const s=localStorage.getItem(`mfl_o_${id}`); return s?JSON.parse(s):null; }catch{ return null; } };
-const timeUntil = dt => {
-  const diff = new Date(dt) - new Date();
-  if(diff <= 0) return null;
-  const mins = Math.floor(diff/60000);
-  if(mins < 2) return "Starting now";
-  if(mins < 60) return `Starts in ${mins}m`;
-  const h = Math.floor(mins/60), m = mins%60;
-  return `Starts in ${h}h${m>0?` ${m}m`:""}`;
-};
 
 const TERMS = [
   {n:"1",t:"Don't leak outside of MFL. What happens in MFL Betzone stays in MFL Betzone. Do not share bet details, balances, or any platform info outside the group."},
@@ -630,6 +620,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [delConfirm,setDelConfirm]=useState(null);
   const [confirm,setConfirm]=useState(null);
   const [tick,setTick]=useState(0);
+  const [pendingAction,setPendingAction]=useState(null); // {type,amount,secsLeft} — countdown before submitting
+  const pendingTimerRef=useRef(null);
   useEffect(()=>{const iv=setInterval(()=>setTick(t=>t+1),30000);return()=>clearInterval(iv);},[]);
 
   const load=useCallback(async()=>{
@@ -761,8 +753,46 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     }catch(e){showToast("Error settling bet","error");}
   };
 
-  const reqDep=async()=>{const a=parseFloat(cash);if(!a||a<=0)return showToast("Enter an amount","error");
-    try{await db.addTx({user_id:session.userId,type:"deposit",amount:a,status:"pending"});setCash("");showToast("Request sent! Bring cash to Brent.");await load();}catch(e){showToast("Error","error");}
+  // Execute after countdown expires — no cancellation possible after this
+  const executePending=async(type,amount)=>{
+    setPendingAction(null);
+    try{
+      if(type==="deposit"){
+        await db.addTx({user_id:session.userId,type:"deposit",amount,status:"pending"});
+        showToast(`$${amount} deposit requested — bring cash to Brent`);
+      }else{
+        // Re-fetch balance at execution time to be safe
+        const fresh=(await db.getUser(session.userId))?.[0];
+        if(!fresh||amount>Math.floor(fresh.balance)){showToast("Balance changed — withdrawal cancelled","error");return;}
+        await db.patchUser(session.userId,{balance:+(fresh.balance-amount).toFixed(2)});
+        await db.addTx({user_id:session.userId,type:"withdraw",amount,status:"pending"});
+        showToast(`$${amount} withdrawal requested — go see Brent`);
+      }
+      await load();
+    }catch(e){showToast("Error submitting request","error");}
+  };
+  const startPending=(type,amount)=>{
+    if(pendingTimerRef.current)clearInterval(pendingTimerRef.current);
+    let secs=8;
+    setPendingAction({type,amount,secsLeft:secs});
+    pendingTimerRef.current=setInterval(()=>{
+      secs--;
+      if(secs<=0){clearInterval(pendingTimerRef.current);pendingTimerRef.current=null;executePending(type,amount);}
+      else setPendingAction(p=>p?{...p,secsLeft:secs}:null);
+    },1000);
+  };
+  const cancelPending=()=>{
+    if(pendingTimerRef.current)clearInterval(pendingTimerRef.current);
+    pendingTimerRef.current=null;
+    setPendingAction(null);
+    showToast("Request cancelled");
+  };
+  const reqDep=async()=>{
+    const a=parseFloat(cash);
+    if(!a||a<=0)return showToast("Enter an amount","error");
+    if(a<5)return showToast("Minimum deposit is $5","error");
+    if(!Number.isInteger(a))return showToast("Whole dollars only — no cents (e.g. $10, $20)","error");
+    setCash("");startPending("deposit",a);
   };
   const reqWith=async()=>{
     const a=parseFloat(cash);
@@ -772,12 +802,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const maxWithdraw=Math.floor(user.balance);
     if(maxWithdraw<10)return showToast(`Balance (₿${(user.balance||0).toFixed(2)}) is too low — minimum $10`,"error");
     if(a>maxWithdraw)return showToast(`Max you can withdraw is $${maxWithdraw}`,"error");
-    try{
-      // Deduct immediately so they can't double-request while pending
-      await db.patchUser(session.userId,{balance:+(user.balance-a).toFixed(2)});
-      await db.addTx({user_id:session.userId,type:"withdraw",amount:a,status:"pending"});
-      setCash("");showToast(`$${a} withdrawal requested — go see Brent to collect`);await load();
-    }catch(e){showToast("Error","error");}
+    setCash("");startPending("withdraw",a);
   };
   const togglePrivacy=async()=>{
     try{await db.patchUser(session.userId,{privacy_public:!user.privacy_public});await load();showToast(user.privacy_public?"Stats now private":"Stats now public");}catch(e){}
@@ -864,6 +889,17 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   return(
     <div style={S.root}>
       {toast&&<Toast t={toast}/>}
+
+      {/* PENDING REQUEST COUNTDOWN — 8 seconds to cancel before it submits */}
+      {pendingAction&&(
+        <div style={{position:"fixed",top:68,left:"50%",transform:"translateX(-50%)",width:"calc(100% - 28px)",maxWidth:452,zIndex:150,background:C.gold,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 4px 24px #00000066"}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:800,color:C.bg}}>{pendingAction.type==="deposit"?"💵":"💸"} ${pendingAction.amount} {pendingAction.type} — submitting in {pendingAction.secsLeft}s</div>
+            <div style={{fontSize:11,color:"#00000077",marginTop:2}}>Tap Cancel to undo before it sends</div>
+          </div>
+          <button onClick={cancelPending} style={{background:C.bg,border:"none",color:C.gold,borderRadius:8,padding:"8px 14px",fontSize:12,fontWeight:800,cursor:"pointer",flexShrink:0,marginLeft:12}}>Cancel</button>
+        </div>
+      )}
 
       {/* CONFIRM BET MODAL */}
       {confirm&&(
@@ -1028,6 +1064,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             ):wc.length===0?<Empty icon="📅" title="No games today" sub="Check back on matchdays — odds update automatically"/>
             :wc.map(g=>{
               const pick=picks[g.id];
+              const myGameBets=bets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -1053,7 +1090,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
-                  {/* Too early — betting window not open yet */}
+                  {/* Existing bet indicator */}
+                  {myGameBets.length>0&&(
+                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}33`,borderRadius:8,padding:"8px 12px",marginBottom:10}}>
+                      {myGameBets.map(b=>(
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                          <span style={{fontSize:13}}>✅</span>
+                          <span style={{fontWeight:700,color:C.green,fontSize:11,letterSpacing:"0.04em"}}>YOUR BET</span>
+                          <span style={{color:C.text}}>{b.legs[0].fighter}</span>
+                          <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                          <span style={{color:C.dim}}>·</span>
+                          <span style={{color:C.gold}}>₿{b.stake}</span>
+                          <span style={{color:C.dim}}>to win</span>
+                          <span style={{color:C.green}}>₿{(b.potential_win||0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {early?(
                     <div style={{textAlign:"center",padding:"18px 12px",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
                       <div style={{fontSize:20,marginBottom:6}}>🔒</div>
@@ -1061,7 +1114,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{fontSize:11,color:C.dim}}>FanDuel lines drop 5 hours before kickoff</div>
                     </div>
                   ):(<>
-                  {closed&&(
+                  {(closed||isLive)&&(
                     <div style={S.closedBanner}>
                       {isFinal?"✓ Final — no more bets":isPostponed?"⚠️ Postponed — bets will be refunded":isLive?"⚽ In progress — no new bets":"🔒 Betting closes 3 min before kickoff"}
                     </div>
@@ -1080,25 +1133,26 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </div>
                   )}
                   <div style={{display:"flex",gap:5}}>
-                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
                       <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
                     </button>
-                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
                       <span style={{fontSize:17}}>⚖️</span>
                       <span style={{fontSize:10,fontWeight:700,color:C.dim}}>DRAW</span>
                       <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(g.oDraw)}</span>
                     </button>
-                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
                       <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
-                  {pick&&!isAdmin&&!closed&&(
+                  {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
+                      {myGameBets.length>0&&<div style={{fontSize:11,color:"#FF9800",marginBottom:8}}>⚠️ You already have a bet on this game — this adds a second separate bet</div>}
                       <div style={{fontSize:12,color:C.dim,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
                         <Flag team={pick.team} size={14}/>
                         <strong style={{color:C.gold}}>{pick.team}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
@@ -1154,6 +1208,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             :mlb.length===0?<Empty icon="⚾" title="No MLB games today" sub="Check back tomorrow — updates automatically"/>
             :mlb.map(g=>{
               const pick=picks[g.id];
+              const myGameBets=bets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -1179,7 +1234,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
-                  {/* Too early — betting window not open yet */}
+                  {/* Existing bet indicator */}
+                  {myGameBets.length>0&&(
+                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}33`,borderRadius:8,padding:"8px 12px",marginBottom:10}}>
+                      {myGameBets.map(b=>(
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                          <span style={{fontSize:13}}>✅</span>
+                          <span style={{fontWeight:700,color:C.green,fontSize:11,letterSpacing:"0.04em"}}>YOUR BET</span>
+                          <span style={{color:C.text}}>{b.legs[0].fighter}</span>
+                          <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                          <span style={{color:C.dim}}>·</span>
+                          <span style={{color:C.gold}}>₿{b.stake}</span>
+                          <span style={{color:C.dim}}>to win</span>
+                          <span style={{color:C.green}}>₿{(b.potential_win||0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {early?(
                     <div style={{textAlign:"center",padding:"18px 12px",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
                       <div style={{fontSize:20,marginBottom:6}}>🔒</div>
@@ -1187,7 +1258,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{fontSize:11,color:C.dim}}>FanDuel lines drop 5 hours before first pitch</div>
                     </div>
                   ):(<>
-                  {(closed||isPostponed)&&<div style={isPostponed?{...S.closedBanner,background:"#1A0E00",border:"1px solid #FF980033",color:"#FF9800"}:S.closedBanner}>{isPostponed?"⚠️ Postponed — bets will be refunded":isFinal?"✓ Final — no more bets":isLive?"⚾ In progress — no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
+                  {(closed||isLive||isPostponed)&&<div style={isPostponed?{...S.closedBanner,background:"#1A0E00",border:"1px solid #FF980033",color:"#FF9800"}:S.closedBanner}>{isPostponed?"⚠️ Postponed — bets will be refunded":isFinal?"✓ Final — no more bets":isLive?"⚾ In progress — no new bets":"🔒 Betting closes 3 min before first pitch"}</div>}
                   {(isLive||isFinal)&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,fontSize:17,fontWeight:900,color:C.text}}>
@@ -1199,20 +1270,21 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </div>
                   )}
                   <div style={{display:"flex",gap:8}}>
-                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
                       <MLBLogo abbr={g.abbr1} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:14,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
                     </button>
-                    <button disabled={isAdmin||closed} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
                       <MLBLogo abbr={g.abbr2} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:14,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
-                  {pick&&!isAdmin&&!closed&&(
+                  {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
+                      {myGameBets.length>0&&<div style={{fontSize:11,color:"#FF9800",marginBottom:8}}>⚠️ You already have a bet on this game — this adds a second separate bet</div>}
                       <div style={{fontSize:12,color:C.dim,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
                         <MLBLogo abbr={g[g.t1===pick.team?"abbr1":"abbr2"]} size={14}/>
                         <strong style={{color:C.gold}}>{pick.team}</strong><span style={{color:C.dim,marginLeft:4}}>({fmtO(pick.odds)})</span>
@@ -1314,13 +1386,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             <div style={{...S.card,marginBottom:10}}>
               <div style={{fontSize:14,fontWeight:800,color:C.text,marginBottom:12}}>💵 Cash In / Withdraw</div>
               <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"11px 13px",fontSize:12,color:C.sub,lineHeight:1.75,marginBottom:12}}>
-                <strong style={{color:C.gold}}>Deposit:</strong> Enter amount → Request → bring cash to Brent.<br/>
+                <strong style={{color:C.gold}}>Deposit:</strong> Enter amount → Request → bring cash to Brent. Min $5.<br/>
                 <strong style={{color:C.gold}}>Withdraw:</strong> Minimum $10 · whole dollars only · go see Brent to collect.<br/>
                 <span style={{color:C.dim}}>$1 USD = ₿1 · Minimum bet ₿1 · No refunds on bets</span>
               </div>
               <div style={{...S.stakeW,marginBottom:10}}>
                 <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
-                <input style={S.stakeInp} type="number" placeholder="whole dollars only (min $10)" value={cash} onChange={e=>setCash(e.target.value)} min="10" step="1"/>
+                <input style={S.stakeInp} type="number" placeholder="whole dollars only (min $5)" value={cash} onChange={e=>setCash(e.target.value)} min="5" step="1"/>
               </div>
               <div style={{display:"flex",gap:8}}>
                 <button style={{...S.btn,flex:1,padding:"13px"}} onClick={reqDep}>REQUEST DEPOSIT</button>
