@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 const SUPA_URL = "https://nuiffniijnbzzkvxxtle.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51aWZmbmlpam5ienprdnh4dGxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDA5MzgsImV4cCI6MjA5NzkxNjkzOH0.dlKFKRYwZIU_GefbPV7aDhOab5B7jGByVTAAV3uQ8C8";
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
+const TEST_USER = "test"; // test account — admin can reset to wipe transactions from P&L
 // ↓ Get a FREE key at the-odds-api.com (500 req/month, no credit card)
 const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || ""; // set in Vercel → Settings → Environment Variables
 
@@ -243,7 +244,20 @@ const fetchESPN = async () => {
     if (!espnRes.ok) return null;
     const d = await espnRes.json();
     const today = todayET();
-    const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
+    let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
+
+    // Before 3am ET: show previous day's completed games so users can see last night's results
+    if (evs.length===0 && isEarlyMorningET()) {
+      const yd = yesterdayStrET();
+      evs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
+      if (evs.length===0) {
+        try {
+          const ydRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=${yd.replace(/-/g,"")}`);
+          if (ydRes.ok) { const ydD=await ydRes.json(); evs=(ydD.events||[]).filter(e=>dateStrET(e.date)===yd); }
+        } catch {}
+      }
+    }
+
     if (!evs.length) return [];
     // Use 15-min cache if any game starts within 30 min, otherwise 60-min cache
     const soon = evs.some(e => isImminent(e.date));
@@ -316,27 +330,33 @@ const fetchWC = async () => {
 
 // Auto-fetch final scores from ESPN for completed games — used to pre-fill settle scores
 const fetchFinalScores = async () => {
-  try {
-    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard");
-    if(!r.ok) return {};
-    const d = await r.json();
-    const scores = {};
-    (d.events||[])
-      .filter(e => e.status?.type?.state === "post") // only completed games
-      .forEach(e => {
-        const cs = e.competitions?.[0]?.competitors||[];
-        const h = cs.find(c=>c.homeAway==="home");
-        const a = cs.find(c=>c.homeAway==="away");
-        if(!h||!a) return;
-        const t1 = normName(h.team?.displayName||"");
-        const t2 = normName(a.team?.displayName||"");
-        const str = `${t1} ${h.score||0} - ${a.score||0} ${t2}`;
-        // Store both orderings so we can match regardless of home/away
-        scores[`${t1}|${t2}`] = str;
-        scores[`${t2}|${t1}`] = str;
-      });
-    return scores;
-  } catch { return {}; }
+  const parseScores = async (url, normed=false) => {
+    try {
+      const r = await fetch(url);
+      if(!r.ok) return {};
+      const d = await r.json();
+      const out = {};
+      (d.events||[])
+        .filter(e => e.status?.type?.state === "post")
+        .forEach(e => {
+          const cs = e.competitions?.[0]?.competitors||[];
+          const h = cs.find(c=>c.homeAway==="home");
+          const a = cs.find(c=>c.homeAway==="away");
+          if(!h||!a) return;
+          const t1 = normed ? normName(h.team?.displayName||"") : (h.team?.displayName||"");
+          const t2 = normed ? normName(a.team?.displayName||"") : (a.team?.displayName||"");
+          const str = `${t1} ${h.score||0} - ${a.score||0} ${t2}`;
+          out[`${t1}|${t2}`] = str;
+          out[`${t2}|${t1}`] = str;
+        });
+      return out;
+    } catch { return {}; }
+  };
+  const [wc, mlb] = await Promise.all([
+    parseScores("https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard", true),
+    parseScores("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard", false),
+  ]);
+  return { ...wc, ...mlb };
 };
 
 // ── MLB — ESPN for schedule/scores, Odds API for real odds ────────────────────
@@ -346,7 +366,19 @@ const fetchMLB = async () => {
     if(!espnRes.ok) return [];
     const d = await espnRes.json();
     const today = todayET();
-    const evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
+    let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
+
+    if (evs.length===0 && isEarlyMorningET()) {
+      const yd = yesterdayStrET();
+      evs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
+      if (evs.length===0) {
+        try {
+          const ydRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${yd.replace(/-/g,"")}`);
+          if (ydRes.ok) { const ydD=await ydRes.json(); evs=(ydD.events||[]).filter(e=>dateStrET(e.date)===yd); }
+        } catch {}
+      }
+    }
+
     if(!evs.length) return [];
     // Use 15-min cache if any game starts within 30 min, otherwise 60-min cache
     const soon = evs.some(e => isImminent(e.date));
@@ -452,6 +484,12 @@ const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
 const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET});
 const todayET = () => dateStrET(new Date().toISOString());
+// Before 3am ET, show previous day's completed games (people stay up late)
+const isEarlyMorningET = () => {
+  const h=parseInt(new Date().toLocaleString("en-US",{timeZone:ET,hour:"numeric",hour12:false})||"12");
+  return h>=0&&h<3;
+};
+const yesterdayStrET = () => new Date(Date.now()-86400000).toLocaleDateString("en-CA",{timeZone:ET});
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
@@ -510,11 +548,11 @@ export default function App(){
   const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]);
   useEffect(()=>{refreshWC();refreshMLB();},[refreshWC,refreshMLB]);
   useEffect(()=>{
-    const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();}},2*60*1000);
-    const h=()=>{if(!document.hidden){refreshWC();refreshMLB();}};
+    const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();load();}},2*60*1000);
+    const h=()=>{if(!document.hidden){refreshWC();refreshMLB();load();}};
     document.addEventListener("visibilitychange",h);
     return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
-  },[refreshWC,refreshMLB]);
+  },[refreshWC,refreshMLB,load]);
   // On load: check localStorage first (remember me), then sessionStorage (this tab only)
   useEffect(()=>{
     try{
@@ -744,13 +782,17 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     (async()=>{
       try{
         const houseAcct=(await db.getHouse())?.[0];
+        // Cancel all bets first
         for(const bet of toRefund){
           await db.patchBet(bet.id,{status:"cancelled"});
-          await db.patchUser(session.userId,{balance:+(user.balance+bet.stake).toFixed(2)});
-          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-bet.stake).toFixed(2)});
           localStorage.setItem(`mfl_refunded_${bet.id}`,"1");
         }
-        showToast(`Game postponed — ₿${toRefund.reduce((a,b)=>a+b.stake,0).toFixed(2)} auto-refunded`);
+        // Fetch fresh user balance then add total in one patch (avoids stale-state overwrite on loop)
+        const totalRefund=toRefund.reduce((a,b)=>a+b.stake,0);
+        const freshUser=(await db.getUser(session.userId))?.[0];
+        if(freshUser) await db.patchUser(session.userId,{balance:+(freshUser.balance+totalRefund).toFixed(2)});
+        if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-totalRefund).toFixed(2)});
+        showToast(`Game postponed — ₿${totalRefund.toFixed(2)} auto-refunded`);
         await load();
       }catch(e){}
     })();
@@ -780,7 +822,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const findGame=gid=>[...wc,...mlb].find(x=>x.id===gid);
 
   const askConfirm=(gid,sport="soccer")=>{
-    const pick=picks[gid]; const g=findGame(gid); if(!pick)return;
+    const pick=picks[gid]; const g=findGame(gid); if(!pick||!g)return;
     const stake=parseFloat(pick.stake);
     if(!stake||stake<1)return showToast("Minimum bet is ₿1","error");
     if(stake>user.balance)return showToast(`You only have ₿${(user.balance||0).toFixed(2)} — can't bet more than your balance`,"error");
@@ -794,7 +836,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     setConfirm(null);
     try{
       await db.patchUser(session.userId,{balance:+(user.balance-stake).toFixed(2)});
-      if(house) await db.patchUser(house.id,{balance:+(house.balance+stake).toFixed(2)});
+      // house is only in state for admins — fetch fresh so user bets always update the pot
+      const houseAcct=(await db.getHouse())?.[0];
+      if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+stake).toFixed(2)});
       const eventName=sport==="mlb"?"MLB 2026":"FIFA World Cup 2026";
       await db.addBet({user_id:session.userId,type:"single",stake,potential_win:win,
         legs:[{fighter:team,matchup,odds,fightId:gid,eventDate:g?.dt||null,event:eventName,sport:sport||"soccer"}]});
@@ -933,6 +977,35 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     catch(e){showToast("Error deleting","error");}
   };
 
+  // Reset test account — cancels all bets, voids balance, clears transactions from P&L
+  // Does not delete the account so it can be reused
+  const resetTestAccount=async uid=>{
+    try{
+      const testUser=users.find(u=>u.id===uid);
+      if(!testUser)return showToast("Test user not found","error");
+      const testBets=allBets.filter(b=>b.user_id===uid);
+      const houseAcct=(await db.getHouse())?.[0];
+      // Reverse all settled bets so P&L is zeroed
+      for(const b of testBets){
+        if(b.status==="won"){
+          // They were paid out — take payout back, give back to house
+          const payout=+(b.stake+b.potential_win).toFixed(2);
+          await db.patchUser(uid,{balance:Math.max(0,+(testUser.balance-payout).toFixed(2))});
+          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+payout).toFixed(2)});
+        } else if(b.status==="pending"){
+          // Refund stake
+          await db.patchUser(uid,{balance:+(testUser.balance+b.stake).toFixed(2)});
+          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-b.stake).toFixed(2)});
+        }
+        // lost bets: house already has the money, nothing to reverse
+        await db.patchBet(b.id,{status:"cancelled"});
+      }
+      // Zero out balance and stats
+      await db.patchUser(uid,{balance:0,cash_in:0,cash_out:0});
+      showToast("Test account reset — all bets voided, balance zeroed ✓");await load();
+    }catch(e){showToast("Error resetting test account","error");}
+  };
+
   if(loading)return<Loader/>;
   if(!user)return<div style={{color:C.text,padding:40,textAlign:"center"}}>Error loading. Refresh.</div>;
 
@@ -946,8 +1019,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const totDep=allTxs.filter(t=>t.type==="deposit"&&t.status==="approved"&&t.user_id!==house?.id).reduce((a,t)=>a+t.amount,0);
 
   const USER_TABS=[
-    {id:"bet",    icon:"🏆",label:"Bet"},
-    {id:"mybets", icon:"🎯",label:`Bets${pending>0?` (${pending})`:""}`},
+    {id:"bet",    icon:"🏆",label:"Games"},
+    {id:"mybets", icon:"🎯",label:`My Bets${pending>0?` (${pending})`:""}`},
     {id:"profile",icon:"👤",label:"Profile"},
   ];
   const ADMIN_TABS=[
@@ -983,9 +1056,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div style={{fontSize:13,color:C.sub,marginBottom:8}}>{confirm.matchup}</div>
               <div style={{fontSize:14,color:C.text,marginBottom:12}}>Pick:&nbsp;
                 <strong style={{color:C.gold,display:"inline-flex",alignItems:"center",gap:5}}>
-                  {confirm.sport==="mlb"
-                    ?<MLBLogo abbr={findGame(confirm.gid)?.[findGame(confirm.gid)?.t1===confirm.team?"abbr1":"abbr2"]} size={16}/>
-                    :<Flag team={confirm.team} size={16}/>}
+                  {(()=>{const cg=findGame(confirm.gid);return confirm.sport==="mlb"?<MLBLogo abbr={cg?.[cg?.t1===confirm.team?"abbr1":"abbr2"]} size={16}/>:<Flag team={confirm.team} size={16}/>;})()}
                   {confirm.team}
                 </strong>
                 <span style={{color:C.dim,fontSize:12}}>&nbsp;({fmtO(confirm.odds)})</span>
@@ -1155,7 +1226,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             ):wc.length===0?<Empty icon="📅" title="No games today" sub="Check back on matchdays — odds update automatically"/>
             :wc.map(g=>{
               const pick=picks[g.id];
-              const myGameBets=bets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+              const allMyGameBets=bets.filter(b=>b.legs?.[0]?.fightId===g.id);
+              const myGameBets=allMyGameBets.filter(b=>b.status==="pending");
+              const mySettledBets=allMyGameBets.filter(b=>b.status==="won"||b.status==="lost");
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -1181,6 +1254,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
+                  {/* Win/loss result — appears when bet is auto-settled or settled by admin */}
+                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>(
+                    <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+                      <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                        <Flag team={b.legs[0].fighter} size={15}/>
+                        <span style={{color:C.sub}}>{b.legs[0].fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                        <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                      </div>
+                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs[0].result}</div>}
+                    </div>
+                  ))}
                   {/* Bet display — locked odds for users who have bet, live odds for everyone else */}
                   {myGameBets.length>0&&!isAdmin&&!showOddsAnyway.has(g.id)?(
                     // User has a bet — show their locked odds, no live updates needed
@@ -1340,7 +1426,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             :mlb.length===0?<Empty icon="⚾" title="No MLB games today" sub="Check back tomorrow — updates automatically"/>
             :mlb.map(g=>{
               const pick=picks[g.id];
-              const myGameBets=bets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+              const allMyGameBets=bets.filter(b=>b.legs?.[0]?.fightId===g.id);
+              const myGameBets=allMyGameBets.filter(b=>b.status==="pending");
+              const mySettledBets=allMyGameBets.filter(b=>b.status==="won"||b.status==="lost");
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -1366,7 +1454,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {until&&<div style={{fontSize:10,color:C.gold,fontWeight:600,marginTop:2}}>{until}</div>}
                     </div>
                   </div>
-                  {/* Bet display — locked odds for users who have bet, live odds for everyone else */}
+                  {/* Win/loss result */}
+                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>(
+                    <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+                      <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                        <MLBLogo abbr={b.legs[0].fighter===g.t1?g.abbr1:g.abbr2} size={15}/>
+                        <span style={{color:C.sub}}>{b.legs[0].fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                        <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                      </div>
+                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs[0].result}</div>}
+                    </div>
+                  ))}
                   {myGameBets.length>0&&!isAdmin&&!showOddsAnyway.has(g.id)?(
                     <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
                       <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:8}}>✅ YOUR LOCKED ODDS</div>
@@ -1716,6 +1816,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+bet.potential_win).toFixed(2)}</button>
                     <button style={{...S.btn,flex:1,padding:"11px",background:"#555"}} onClick={()=>settleBet(bet.id,"lost")}>❌ LOST</button>
                   </div>
+                  <button style={{marginTop:6,background:"none",border:"1px solid #FF980033",color:"#FF9800",borderRadius:8,padding:"7px",fontSize:10,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>cancelBet(bet.id)}>↩ Cancel bet &amp; refund ₿{bet.stake}</button>
                 </div>
               );
             })}
@@ -1793,6 +1894,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         ))}
                       </>}
                       <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+                        {u.username===TEST_USER&&(
+                          <button style={{...S.btn,width:"100%",padding:"10px",marginBottom:8,background:"#FF9800",fontSize:11}} onClick={()=>resetTestAccount(u.id)}>
+                            🧪 Reset Test Account — Void all bets &amp; zero balance
+                          </button>
+                        )}
                         {delConfirm===u.id?(
                           <div style={{background:"#1A0A0A",border:"1px solid #E5393533",borderRadius:10,padding:"12px"}}>
                             <div style={{fontSize:13,color:"#E53935",marginBottom:10,lineHeight:1.5}}>Delete <strong>@{u.username}</strong>? Permanently removes their account, bets, and transactions.</div>
