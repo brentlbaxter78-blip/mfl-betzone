@@ -156,10 +156,9 @@ const ODDS_SPORT_KEYS = {
 };
 
 const fetchOddsAPI = async (sport, soon=false) => {
-  if (!ODDS_API_KEY) return null;
   const key = ODDS_SPORT_KEYS[sport];
   if (!key) return null;
-  // 1. Try Supabase odds_cache first (kept fresh by Vercel Cron — no direct API call needed)
+  // 1. Try Supabase odds_cache first (kept fresh by Vercel Cron — no API key needed)
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/odds_cache?id=eq.${sport}&select=data,updated_at`, {
       headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
@@ -168,7 +167,6 @@ const fetchOddsAPI = async (sport, soon=false) => {
       const rows = await r.json();
       const row = rows?.[0];
       if(row?.data && Array.isArray(row.data)){
-        // Cache the Supabase result locally too so re-renders don't re-fetch
         setOddsCache(key, row.data, soon);
         return row.data;
       }
@@ -177,7 +175,8 @@ const fetchOddsAPI = async (sport, soon=false) => {
   // 2. Fall back to local localStorage cache
   const cached = getOddsCache(key, soon);
   if (cached) return cached;
-  // 3. Last resort: call The Odds API directly (client-side, for dev/fallback)
+  // 3. Last resort: call The Odds API directly (only if key available)
+  if (!ODDS_API_KEY) return null;
   try {
     const r = await fetch(
       `https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`
@@ -192,7 +191,6 @@ const fetchOddsAPI = async (sport, soon=false) => {
 
 // Fetch baseline odds (morning display, betting still locked)
 const fetchBaselineOdds = async (sport) => {
-  if(!ODDS_API_KEY) return null;
   const key = ODDS_SPORT_KEYS[sport];
   if(!key) return null;
   // Same priority: Supabase → localStorage → direct call
@@ -204,6 +202,7 @@ const fetchBaselineOdds = async (sport) => {
   } catch {}
   const cached = getBaselineCache(key);
   if(cached) return cached;
+  if(!ODDS_API_KEY) return null;
   try{
     const r = await fetch(`https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`);
     if(!r.ok) return null;
@@ -548,11 +547,11 @@ export default function App(){
   const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]);
   useEffect(()=>{refreshWC();refreshMLB();},[refreshWC,refreshMLB]);
   useEffect(()=>{
-    const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();load();}},2*60*1000);
-    const h=()=>{if(!document.hidden){refreshWC();refreshMLB();load();}};
+    const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();}},2*60*1000);
+    const h=()=>{if(!document.hidden){refreshWC();refreshMLB();}};
     document.addEventListener("visibilitychange",h);
     return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
-  },[refreshWC,refreshMLB,load]);
+  },[refreshWC,refreshMLB]);
   // On load: check localStorage first (remember me), then sessionStorage (this tab only)
   useEffect(()=>{
     try{
@@ -722,6 +721,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [loading,setLoading]=useState(!isAdmin);
   const [picks,setPicks]=useState({}); const [cash,setCash]=useState("");
   const [houseCash,setHouseCash]=useState("");
+  const [houseSeed,setHouseSeed]=useState("");
   const [expanded,setExpanded]=useState(null); const [showPw,setShowPw]=useState({});
   const [betNotifs,setBetNotifs]=useState([]);
   const [settleScores,setSettleScores]=useState({});
@@ -767,6 +767,14 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
+  // Periodic bet/balance refresh so auto-settled bets appear without manual reload
+  // Also fires on tab focus so users coming back from another app see fresh data immediately
+  useEffect(()=>{
+    const iv=setInterval(()=>{if(!document.hidden)load();},2*60*1000);
+    const h=()=>{if(!document.hidden)load();};
+    document.addEventListener("visibilitychange",h);
+    return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
+  },[load]);
 
   // Auto-refund any pending bets on postponed/cancelled games — no player or admin action needed
   useEffect(()=>{
@@ -960,6 +968,18 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       setHouseCash("");showToast(`₿${a} logged — take $${a} from the pot`);await load();
     }catch(e){showToast("Error","error");}
   };
+  const seedHouse=async()=>{
+    const a=parseFloat(houseSeed);
+    if(!a||a<=0)return showToast("Enter an amount","error");
+    if(!Number.isInteger(a))return showToast("Whole dollars only","error");
+    if(!house)return showToast("House account not found","error");
+    try{
+      // Track as cash_in so it's excluded from P&L (seed ≠ earned profit)
+      await db.patchUser(house.id,{balance:+(house.balance+a).toFixed(2),cash_in:+((house.cash_in||0)+a).toFixed(2)});
+      await db.addTx({user_id:house.id,type:"deposit",amount:a,status:"approved",note:"House seed capital"});
+      setHouseSeed("");showToast(`₿${a} seeded into the pot — this won't count toward earnings`);await load();
+    }catch(e){showToast("Error seeding house","error");}
+  };
   const cancelBet=async(betId)=>{
     const bet=allBets.find(b=>b.id===betId);
     const player=users.find(u=>u.id===bet?.user_id);
@@ -985,22 +1005,20 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       if(!testUser)return showToast("Test user not found","error");
       const testBets=allBets.filter(b=>b.user_id===uid);
       const houseAcct=(await db.getHouse())?.[0];
-      // Reverse all settled bets so P&L is zeroed
+      // Calculate total house adjustment needed (batch to avoid stale-balance overwrite)
+      let houseDelta=0;
       for(const b of testBets){
-        if(b.status==="won"){
-          // They were paid out — take payout back, give back to house
-          const payout=+(b.stake+b.potential_win).toFixed(2);
-          await db.patchUser(uid,{balance:Math.max(0,+(testUser.balance-payout).toFixed(2))});
-          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+payout).toFixed(2)});
-        } else if(b.status==="pending"){
-          // Refund stake
-          await db.patchUser(uid,{balance:+(testUser.balance+b.stake).toFixed(2)});
-          if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-b.stake).toFixed(2)});
-        }
+        if(b.status==="won") houseDelta+=+(b.stake+b.potential_win).toFixed(2); // house gets payout back
+        else if(b.status==="pending") houseDelta-=b.stake; // house gives stake back
         // lost bets: house already has the money, nothing to reverse
         await db.patchBet(b.id,{status:"cancelled"});
       }
-      // Zero out balance and stats
+      // Apply house delta in one fresh fetch (avoids stale-balance overwrite)
+      if(houseAcct&&houseDelta!==0){
+        const freshHouse=(await db.getHouse())?.[0];
+        if(freshHouse) await db.patchUser(freshHouse.id,{balance:+(freshHouse.balance+houseDelta).toFixed(2)});
+      }
+      // Zero out test player balance and stats
       await db.patchUser(uid,{balance:0,cash_in:0,cash_out:0});
       showToast("Test account reset — all bets voided, balance zeroed ✓");await load();
     }catch(e){showToast("Error resetting test account","error");}
@@ -1016,7 +1034,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const uTxs=uid=>allTxs.filter(t=>t.user_id===uid&&t.user_id!==house?.id);
   const uPnl=uid=>uBets(uid).reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
   const pendBets=allBets.filter(b=>b.status==="pending");
-  const totDep=allTxs.filter(t=>t.type==="deposit"&&t.status==="approved"&&t.user_id!==house?.id).reduce((a,t)=>a+t.amount,0);
 
   const USER_TABS=[
     {id:"bet",    icon:"🏆",label:"Games"},
@@ -1582,7 +1599,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               ))}
             </div>
             <ST title="My Bets" sub="All bets are final — no refunds"/>
-            {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Go to the Bet tab to place a bet"/>
+            {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Go to the Games tab to place a bet"/>
             :bets.map(bet=>(
               <div key={bet.id} style={{...S.card,marginBottom:10}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -1764,13 +1781,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <div style={{fontSize:9,color:C.dim,marginTop:2}}>profit pocketed</div>
                 </div>
                 <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
-                  <div style={{fontSize:10,color:C.dim,marginBottom:4}}>TOTAL EARNED</div>
-                  <div style={{fontSize:20,fontWeight:900,color:C.gold}}>₿{((house?.balance||0)+(house?.cash_out||0)).toFixed(2)}</div>
-                  <div style={{fontSize:9,color:C.dim,marginTop:2}}>pot + withdrawn</div>
+                  {(()=>{const profit=+((house?.balance||0)+(house?.cash_out||0)-(house?.cash_in||0)).toFixed(2);return(<>
+                    <div style={{fontSize:10,color:C.dim,marginBottom:4}}>TRUE PROFIT</div>
+                    <div style={{fontSize:20,fontWeight:900,color:profit>=0?C.gold:"#FF5252"}}>₿{profit.toFixed(2)}</div>
+                    <div style={{fontSize:9,color:C.dim,marginTop:2}}>excl. seed capital</div>
+                  </>);})()}
                 </div>
               </div>
+              {(house?.cash_in||0)>0&&<div style={{fontSize:11,color:C.dim,background:C.bg,borderRadius:8,padding:"8px 12px",marginBottom:12}}>💰 Seeded capital: ₿{(house.cash_in||0).toFixed(2)} — excluded from profit</div>}
               <div style={{fontSize:11,color:C.sub,background:C.bg,borderRadius:8,padding:"10px 12px",marginBottom:14,lineHeight:1.8}}>
-                <strong style={{color:C.gold}}>How it works:</strong> Every bet placed adds to the pot. Every winning payout reduces it. The 10% vig is built into the odds — so the house naturally keeps ~9¢ per $1 wagered on balanced action. Pot + Withdrawn = your total profit all time.
+                <strong style={{color:C.gold}}>How it works:</strong> Every bet placed adds to the pot. Every winning payout reduces it. The 10% vig is built into the odds — so the house naturally keeps ~9¢ per $1 wagered on balanced action. True Profit = Pot + Withdrawn − Seed Capital.
+              </div>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                <div style={{...S.stakeW,flex:1}}>
+                  <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
+                  <input style={S.stakeInp} type="number" placeholder="Seed capital (won't count as profit)" value={houseSeed} onChange={e=>setHouseSeed(e.target.value)} min="1" step="1"/>
+                </div>
+                <button style={{...S.btn,padding:"0 14px",whiteSpace:"nowrap"}} onClick={seedHouse}>💰 Seed</button>
               </div>
               <div style={{...S.stakeW,marginBottom:10}}>
                 <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
@@ -1824,11 +1851,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {/* House tx history */}
             {allTxs.filter(t=>t.user_id===house?.id).length>0&&(
               <>
-                <ST title="Withdrawal History" style={{marginTop:20}}/>
-                {allTxs.filter(t=>t.user_id===house?.id).slice(0,10).map(tx=>(
+                <ST title="House Transaction History" style={{marginTop:20}}/>
+                {allTxs.filter(t=>t.user_id===house?.id).slice(0,15).map(tx=>(
                   <div key={tx.id} style={{...S.card,display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <div><div style={{fontSize:13,fontWeight:700,color:C.text}}>💸 Took from pot</div><div style={{fontSize:10,color:C.dim}}>{fmtDate(tx.created_at)}</div></div>
-                    <span style={{fontSize:14,fontWeight:800,color:"#FF6B35"}}>−₿{tx.amount.toFixed(2)}</span>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:700,color:C.text}}>
+                        {tx.type==="deposit"?"💰 Seed capital added":"💸 Withdrew from pot"}
+                      </div>
+                      {tx.note&&<div style={{fontSize:10,color:C.dim,marginTop:1}}>{tx.note}</div>}
+                      <div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(tx.created_at)}</div>
+                    </div>
+                    <span style={{fontSize:14,fontWeight:800,color:tx.type==="deposit"?C.gold:"#FF6B35"}}>
+                      {tx.type==="deposit"?"+":"-"}₿{tx.amount.toFixed(2)}
+                    </span>
                   </div>
                 ))}
               </>
