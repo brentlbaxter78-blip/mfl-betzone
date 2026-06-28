@@ -343,9 +343,16 @@ const fetchMLB = async () => {
     const today = todayET();
     let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
 
-    // Show yesterday's games if:
-    // A) Before 3am ET (people stay up late), OR
-    // B) ESPN already rolled over to next day before midnight (common ~11pm ET)
+    // If ESPN default scoreboard doesn't have today's games yet (common before first pitch),
+    // explicitly request today's date — ESPN often shows yesterday until games are underway
+    if (evs.length===0) {
+      try {
+        const todayRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${today.replace(/-/g,"")}`);
+        if (todayRes.ok) { const todayD=await todayRes.json(); evs=(todayD.events||[]).filter(e=>dateStrET(e.date)===today); }
+      } catch {}
+    }
+
+    // If still empty, show yesterday's completed games (before 8am ET or ESPN rolled over)
     if (evs.length===0) {
       const yd = yesterdayStrET();
       let ydEvs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
@@ -355,7 +362,7 @@ const fetchMLB = async () => {
           if (ydRes.ok) { const ydD=await ydRes.json(); ydEvs=(ydD.events||[]).filter(e=>dateStrET(e.date)===yd); }
         } catch {}
       }
-      // Only use yesterday if all events are final (don't replace live today games)
+      // Only show yesterday if all games are final (don't replace live today games)
       if (ydEvs.length>0 && ydEvs.every(e=>e.status?.type?.state==="post")) evs=ydEvs;
     }
 
