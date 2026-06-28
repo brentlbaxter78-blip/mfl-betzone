@@ -704,7 +704,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [settleScores,setSettleScores]=useState({});
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
+  const [delConfirmText,setDelConfirmText]=useState("");
   const [confirm,setConfirm]=useState(null);
+  const [settleConfirm,setSettleConfirm]=useState(null); // {betId,outcome} — two-step confirm for manual settle
   const [tick,setTick]=useState(0);
   const [pendingAction,setPendingAction]=useState(null); // {type,amount,secsLeft} — countdown before submitting
   const pendingTimerRef=useRef(null);
@@ -1865,9 +1867,28 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     {autoFilledIds.has(bet.id)&&settleScores[bet.id]&&<span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em"}}>AUTO ✓</span>}
                   </div>
                   <div style={{display:"flex",gap:8}}>
-                    <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+(bet.potential_win||0)).toFixed(2)}</button>
-                    <button style={{...S.btn,flex:1,padding:"11px",background:"#555"}} onClick={()=>settleBet(bet.id,"lost")}>❌ LOST</button>
+                    <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>setSettleConfirm({betId:bet.id,outcome:"won"})}>🏆 WON — Pay ₿{+(bet.stake+(bet.potential_win||0)).toFixed(2)}</button>
+                    <button style={{...S.btn,flex:1,padding:"11px",background:"#555"}} onClick={()=>setSettleConfirm({betId:bet.id,outcome:"lost"})}>❌ LOST</button>
                   </div>
+                  {settleConfirm?.betId===bet.id&&(
+                    <div style={{marginTop:8,background:"#0D0D1A",border:"1px solid #E5393555",borderRadius:10,padding:"14px"}}>
+                      <div style={{fontSize:13,fontWeight:800,color:"#E53935",marginBottom:4}}>
+                        {settleConfirm.outcome==="won"
+                          ?`⚠️ Pay ₿${+(bet.stake+(bet.potential_win||0)).toFixed(2)} to ${player?.display_name}?`
+                          :`⚠️ Mark as LOST — house keeps ₿${bet.stake}?`}
+                      </div>
+                      <div style={{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.5}}>
+                        This cannot be undone. Auto-settlement handles most games — only use this for edge cases where the cron missed it.
+                      </div>
+                      <div style={{display:"flex",gap:8}}>
+                        <button style={{...S.btn,flex:1,padding:"12px",background:settleConfirm.outcome==="won"?"#00C853":"#E53935"}}
+                          onClick={()=>{settleBet(bet.id,settleConfirm.outcome);setSettleConfirm(null);}}>
+                          ✓ YES, CONFIRM
+                        </button>
+                        <button style={{...S.ghost,flex:1,padding:"12px"}} onClick={()=>setSettleConfirm(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                   <button style={{marginTop:6,background:"none",border:"1px solid #FF980033",color:"#FF9800",borderRadius:8,padding:"7px",fontSize:10,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>cancelBet(bet.id)}>↩ Cancel bet &amp; refund ₿{bet.stake}</button>
                 </div>
               );
@@ -1960,15 +1981,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           </button>
                         )}
                         {delConfirm===u.id?(
-                          <div style={{background:"#1A0A0A",border:"1px solid #E5393533",borderRadius:10,padding:"12px"}}>
-                            <div style={{fontSize:13,color:"#E53935",marginBottom:10,lineHeight:1.5}}>Delete <strong>@{u.username}</strong>? Permanently removes their account, bets, and transactions.</div>
+                          <div style={{background:"#1A0A0A",border:"1px solid #E5393555",borderRadius:10,padding:"14px"}}>
+                            <div style={{fontSize:13,fontWeight:800,color:"#E53935",marginBottom:6}}>⚠️ Delete @{u.username}?</div>
+                            <div style={{fontSize:11,color:C.dim,marginBottom:8,lineHeight:1.6}}>
+                              This permanently removes their account, all {uBets(u.id).length} bet{uBets(u.id).length!==1?"s":""}, and all transactions. Current balance: <strong style={{color:C.text}}>₿{(u.balance||0).toFixed(2)}</strong>. <strong style={{color:"#E53935"}}>This cannot be undone.</strong>
+                            </div>
+                            <div style={{fontSize:11,color:C.sub,marginBottom:6}}>Type <strong style={{color:C.text}}>@{u.username}</strong> to confirm:</div>
+                            <input
+                              style={{...S.inp,fontSize:13,padding:"10px 12px",marginBottom:10,borderColor:delConfirmText===u.username?"#E53935":C.border}}
+                              placeholder={`@${u.username}`}
+                              value={delConfirmText}
+                              onChange={e=>setDelConfirmText(e.target.value.replace("@",""))}
+                              autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                            />
                             <div style={{display:"flex",gap:8}}>
-                              <button style={{...S.btn,flex:1,padding:"11px",background:"#E53935"}} onClick={()=>doDelete(u.id)}>Yes, Delete</button>
-                              <button style={{...S.ghost,flex:1,padding:"11px"}} onClick={()=>setDelConfirm(null)}>Cancel</button>
+                              <button
+                                style={{...S.btn,flex:1,padding:"12px",background:delConfirmText===u.username?"#E53935":"#333",cursor:delConfirmText===u.username?"pointer":"not-allowed",opacity:delConfirmText===u.username?1:0.5}}
+                                onClick={()=>{if(delConfirmText===u.username){doDelete(u.id);setDelConfirmText("");}}}
+                              >🗑 PERMANENTLY DELETE</button>
+                              <button style={{...S.ghost,flex:1,padding:"12px"}} onClick={()=>{setDelConfirm(null);setDelConfirmText("");}}>Cancel</button>
                             </div>
                           </div>
                         ):(
-                          <button style={{background:"none",border:"1px solid #E5393533",color:"#E53935",borderRadius:8,padding:"8px 16px",fontSize:12,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>setDelConfirm(u.id)}>Delete Account</button>
+                          <button style={{background:"none",border:"1px solid #E5393533",color:"#E53935",borderRadius:8,padding:"8px 16px",fontSize:12,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>{setDelConfirm(u.id);setDelConfirmText("");}}>Delete Account</button>
                         )}
                       </div>
                     </div>
