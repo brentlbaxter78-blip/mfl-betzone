@@ -1024,21 +1024,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     }catch(e){showToast("Error resetting test account","error");}
   };
 
-  if(loading)return<Loader/>;
-  if(!user)return<div style={{color:C.text,padding:40,textAlign:"center"}}>Error loading. Refresh.</div>;
-
-  const pnl=bets.reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
-  const pending=bets.filter(b=>b.status==="pending").length;
-  const byUser={};allBets.forEach(b=>{if(!byUser[b.user_id])byUser[b.user_id]=[];byUser[b.user_id].push(b);});
-  const uBets=uid=>allBets.filter(b=>b.user_id===uid);
-  const uTxs=uid=>allTxs.filter(t=>t.user_id===uid&&t.user_id!==house?.id);
-  const uPnl=uid=>uBets(uid).reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
+  // ── Hooks that must come BEFORE any early return (React rules of hooks) ──────
   const prevOddsRef=useRef({});
   const lastAutoRefreshRef=useRef(0);
-
-  // Check if any line moved by 5+ implied probability points vs previous read
-  // Uses probability (not raw moneyline) so blowout odds like -600/+1800 don't
-  // trigger false positives — a +1800→+1700 move is only 0.3% prob, not a big deal
   const mlToProb=o=>o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100);
   const checkOddsMove=useCallback(async(games,sport)=>{
     const prev=prevOddsRef.current;
@@ -1050,32 +1038,34 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       const fields=sport==='soccer'?['o1','o2','oDraw']:['o1','o2'];
       for(const f of fields){
         if(!g[f]||!p[f]) continue;
-        // 5 percentage-point probability shift = genuinely significant regardless of line size
         const probDiff=Math.abs(mlToProb(g[f])-mlToProb(p[f]));
         if(probDiff>=0.05){bigMove=true;break;}
       }
       if(bigMove) break;
     }
-    // Update stored odds for next comparison
     games.forEach(g=>{prevOddsRef.current[g.id]={o1:g.o1,o2:g.o2,oDraw:g.oDraw};});
     if(bigMove){
       const now=Date.now();
-      const lastRefresh=lastAutoRefreshRef.current;
-      // Throttle: max one auto-refresh per 60 min
-      if(now-lastRefresh>60*60*1000){
+      if(now-lastAutoRefreshRef.current>60*60*1000){
         lastAutoRefreshRef.current=now;
         showToast(`⚠️ Significant odds shift detected — auto-refreshing`,"error");
-        try{
-          await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}});
-        }catch(e){}
+        try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch(e){}
       }
     }
   },[showToast]);
-
-  // Watch for big odds moves whenever game data refreshes (wc/mlb come from App props)
   useEffect(()=>{if(wc.length)checkOddsMove(wc,'soccer');},[wc,checkOddsMove]);
   useEffect(()=>{if(mlb.length)checkOddsMove(mlb,'mlb');},[mlb,checkOddsMove]);
 
+  // ── Early returns (all hooks above must be declared before these) ────────────
+  if(loading)return<Loader/>;
+  if(!user)return<div style={{color:C.text,padding:40,textAlign:"center"}}>Error loading. Refresh.</div>;
+
+  const pnl=bets.reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
+  const pending=bets.filter(b=>b.status==="pending").length;
+  const byUser={};allBets.forEach(b=>{if(!byUser[b.user_id])byUser[b.user_id]=[];byUser[b.user_id].push(b);});
+  const uBets=uid=>allBets.filter(b=>b.user_id===uid);
+  const uTxs=uid=>allTxs.filter(t=>t.user_id===uid&&t.user_id!==house?.id);
+  const uPnl=uid=>uBets(uid).reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
   const pendBets=allBets.filter(b=>b.status==="pending");
 
   const USER_TABS=[
