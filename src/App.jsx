@@ -264,6 +264,9 @@ const fetchESPN = async () => {
       const isFinal = state === "post";
       const isPostponed = state==="postponed"||desc.includes("postponed")||desc.includes("canceled")||desc.includes("suspended");
 
+      const notes=(e.competitions?.[0]?.notes||[]).map(n=>(n.text||'').toLowerCase()).join(' ');
+      const isKnockout=/round of|knockout|quarterfinal|semifinal|\bfinal\b/i.test(notes);
+
       // Priority: Odds API (FanDuel/DraftKings) → ESPN odds → calculated fallback
       const bookOdds = getBookOdds(apiGames, t1, t2);
       const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
@@ -275,7 +278,8 @@ const fetchESPN = async () => {
 
       let o1 = bookOdds?.o1 ?? (eO1||null) ?? fb.o1;
       let o2 = bookOdds?.o2 ?? (eO2||null) ?? fb.o2;
-      let oDraw = bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw;
+      // Knockout stage: no Draw — winner is whoever advances (incl. ET & pens)
+      let oDraw = isKnockout ? null : (bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw);
       const book = bookOdds?.book || (eO1?"ESPN BET":null);
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
@@ -290,7 +294,7 @@ const fetchESPN = async () => {
       const period = (isLive||isFinal)?(e.status?.type?.shortDetail??null):null;
 
       return { id:e.id, t1, t2, dt:e.date, rnd:e.name||"FIFA World Cup 2026",
-        isLive, isFinal, isPostponed, usingRealOdds, isBaselineOdds:isBaselineMode, book, o1, oDraw, o2,
+        isLive, isFinal, isPostponed, isKnockout, usingRealOdds, isBaselineOdds:isBaselineMode, book, o1, oDraw, o2,
         score:(homeScore!==null&&awayScore!==null)?{home:homeScore,away:awayScore}:null, clock, period };
     });
   } catch { return null; }
