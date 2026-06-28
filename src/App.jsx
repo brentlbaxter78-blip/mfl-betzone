@@ -284,9 +284,16 @@ const fetchESPN = async () => {
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
       // Use FanDuel/book odds directly — no extra vig added on top
-      // Persist odds before game ends so final score card shows real pre-game lines
-      if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
-      else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
+      // For live/final games: always lock to pre-game saved odds — never recalculate
+      // (Odds API drops the game once it starts, causing garbage fallback values)
+      if(isLive || isFinal || isPostponed){
+        const sv=loadOdds(e.id);
+        if(sv){o1=sv.o1;o2=sv.o2;if(!isKnockout)oDraw=sv.oDraw||oDraw;}
+        // Don't save or update odds for in-progress/finished games
+      } else {
+        if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
+        else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
+      }
 
       const homeScore = (isLive||isFinal)?(h?.score??null):null;
       const awayScore = (isLive||isFinal)?(a?.score??null):null;
@@ -1038,6 +1045,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const prev=prevOddsRef.current;
     let bigMove=false;
     for(const g of games){
+      // Never track odds moves for live or final games — API drops those lines
+      // causing garbage values that would falsely trigger auto-refresh
+      if(g.isLive||g.isFinal||g.isPostponed) continue;
       const key=g.id;
       const p=prev[key];
       if(!p) continue;
