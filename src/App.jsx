@@ -501,8 +501,8 @@ const mlToProb = o => {
   return o < 0 ? Math.abs(o)/(Math.abs(o)+100) : 100/(o+100);
 };
 // Persist pre-game odds so they survive after the game ends (Odds API drops them post-game)
-const saveOdds = (id, odds) => { try{ localStorage.setItem(`mfl_o_${id}`, JSON.stringify(odds)); }catch{} };
-const loadOdds = (id) => { try{ const s=localStorage.getItem(`mfl_o_${id}`); return s?JSON.parse(s):null; }catch{ return null; } };
+const saveOdds = (id, odds) => { try{ localStorage.setItem(`mfl_o2_${id}`, JSON.stringify(odds)); }catch{} };
+const loadOdds = (id) => { try{ const s=localStorage.getItem(`mfl_o2_${id}`); return s?JSON.parse(s):null; }catch{ return null; } };
 
 const TERMS = [
   {n:"1",t:"Don't leak outside of MFL. What happens in MFL Betzone stays in MFL Betzone. Do not share bet details, balances, or any platform info outside the group."},
