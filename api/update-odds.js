@@ -1,16 +1,13 @@
 // api/update-odds.js
-// Vercel serverless function â runs every 5 min via cron
+// Vercel serverless function — runs every 5 min via cron
 //
 // Does two things:
-//  1. Updates odds in Supabase on a game-time-aligned schedule
-//  2. Auto-settles finished games (no admin action needed)
+//  1. Updates odds in Supabase on a FIXED daily schedule (not game-relative)
+//  2. Auto-settles finished games
 //
-// Odds update schedule per game:
-//   12h before â morning baseline (display only, betting locked)
-//    5h before â betting opens
-//  4h 3h 2h 1h â hourly during window
-//   30min before â pre-close update
-//   10min before â final update (~7 min before betting closes at -3 min)
+// Fixed update times (ET): 8am, 10am, 12pm, 3pm, 5pm, 7pm, 9pm
+// = 7 calls per sport × 2 sports = 14 API calls/day MAX — regardless of how many games
+// Acceptance window = 4 min (< 5 min cron interval so each slot fires exactly once)
 
 const SUPA_URL    = process.env.SUPA_URL;
 const SUPA_KEY    = process.env.SUPA_KEY;
@@ -28,26 +25,27 @@ const SPORTS = {
   },
 };
 
-const UPDATE_OFFSETS_MINUTES = [-12*60, -5*60, -4*60, -3*60, -2*60, -1*60, -30, -10];
-const ACCEPT_WINDOW_MS = 6 * 60 * 1000;
+// Fixed daily update hours (ET) — 7 per sport = 14 total API calls/day max
+const UPDATE_HOURS_ET = [8, 10, 12, 15, 17, 19, 21];
+// 4 min window — must be less than cron interval (5 min) to prevent double-firing
+const ACCEPT_WINDOW_MS = 4 * 60 * 1000;
 
 // WC name normalization (mirrors client)
 const WC_NAME_MAP = {
-  "United States":"USA","Korea Republic":"South Korea","CÃ´te d'Ivoire":"Ivory Coast",
+  "United States":"USA","Korea Republic":"South Korea","Côte d'Ivoire":"Ivory Coast",
   "DR Congo":"Congo","Czech Republic":"Czechia","Bosnia and Herzegovina":"Bosnia",
   "Trinidad and Tobago":"Trinidad","United Arab Emirates":"UAE","China PR":"China",
   "IR Iran":"Iran","Republic of Ireland":"Ireland","Central African Republic":"CAR",
 };
 const normName = n => WC_NAME_MAP[n] || n;
 
-// ââ Supabase helpers ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Supabase helpers ────────────────────────────────────────────────────────
 const sbHeaders = {
   apikey: SUPA_KEY,
   Authorization: `Bearer ${SUPA_KEY}`,
   "Content-Type": "application/json",
   Prefer: "return=minimal",
 };
-
 async function sbGet(path) {
   const r = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
     headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
@@ -60,28 +58,42 @@ async function sbPatch(path, body) {
   });
 }
 
-// ââ Odds schedule helpers ââââââââââââââââââââââââââââââââââââââââââââââââââ
-function targetTimes(gameTimeMs) {
-  return UPDATE_OFFSETS_MINUTES.map(m => gameTimeMs + m * 60000);
-}
-function shouldUpdate(gameTimes) {
-  const now = Date.now();
-  return gameTimes.some(gt => targetTimes(gt).some(t => now >= t && now < t + ACCEPT_WINDOW_MS));
-}
-function nextUpdateLabel(gameTimes) {
-  const now = Date.now();
-  const next = gameTimes.flatMap(gt => targetTimes(gt)).filter(t => t > now).sort()[0];
-  if (!next) return "none today";
-  return new Date(next).toLocaleTimeString("en-US", { timeZone:"America/New_York", hour:"2-digit", minute:"2-digit" }) + " ET";
+// ── Fixed schedule helper ──────────────────────────────────────────────────
+function shouldUpdateNow() {
+  const now = new Date();
+  // Get current ET hour and minute
+  const etStr = now.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric", minute: "numeric", hour12: false
+  });
+  const [etHour, etMin] = etStr.split(":").map(Number);
+  const nowMinutes = etHour * 60 + etMin;
+  return UPDATE_HOURS_ET.some(h => {
+    const targetMinutes = h * 60;
+    return nowMinutes >= targetMinutes && nowMinutes < targetMinutes + (ACCEPT_WINDOW_MS / 60000);
+  });
 }
 
-async function fetchGameTimes(espnUrl) {
+function nextUpdateLabel() {
+  const now = new Date();
+  const etStr = now.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric", minute: "numeric", hour12: false
+  });
+  const [etHour, etMin] = etStr.split(":").map(Number);
+  const nowMinutes = etHour * 60 + etMin;
+  const next = UPDATE_HOURS_ET.find(h => h * 60 > nowMinutes);
+  if (!next) return "tomorrow at 8am ET";
+  return `${next > 12 ? next - 12 : next}${next >= 12 ? "pm" : "am"} ET`;
+}
+
+async function hasGamesToday(espnUrl) {
   try {
     const r = await fetch(espnUrl);
-    if (!r.ok) return [];
+    if (!r.ok) return false;
     const d = await r.json();
-    return (d.events || []).map(e => new Date(e.date).getTime());
-  } catch { return []; }
+    return (d.events || []).length > 0;
+  } catch { return false; }
 }
 
 async function storeOdds(sportId, data) {
@@ -92,8 +104,7 @@ async function storeOdds(sportId, data) {
   return r.ok;
 }
 
-// ââ Auto-settlement ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-// Fetch completed game results from ESPN
+// ── Auto-settlement ────────────────────────────────────────────────────────
 async function fetchFinalResults(sport) {
   const { espnUrl } = SPORTS[sport];
   try {
@@ -120,82 +131,62 @@ async function fetchFinalResults(sport) {
   } catch { return {}; }
 }
 
-// Determine if a bet won or lost given the final game result
 function determineOutcome(fighter, result) {
   const { t1, t2, home, away } = result;
   if (fighter === "Draw") return home === away ? "won" : "lost";
-  // Exact match first
   if (fighter === t1) return home > away ? "won" : home < away ? "lost" : null;
   if (fighter === t2) return away > home ? "won" : away < home ? "lost" : null;
-  // Fuzzy: last word of team name (e.g. "Red Sox" vs "Boston Red Sox")
   const lastWord = s => s.split(" ").slice(-1)[0];
   if (lastWord(t1) === lastWord(fighter)) return home > away ? "won" : home < away ? "lost" : null;
   if (lastWord(t2) === lastWord(fighter)) return away > home ? "won" : away < home ? "lost" : null;
-  return null; // can't determine â skip
+  return null;
 }
 
 async function autoSettle() {
-  // Get pending bets
   const pending = await sbGet("bets?status=eq.pending&select=*");
   if (!pending?.length) return { settled: 0 };
-
-  // Get all users
   const users = await sbGet("users?select=id,balance,username");
   if (!users) return { settled: 0 };
   const house = users.find(u => u.username === "__house__");
-
-  // Get final results from both sports
   const [wcRes, mlbRes] = await Promise.all([
     fetchFinalResults("soccer"),
     fetchFinalResults("mlb"),
   ]);
   const allResults = { ...wcRes, ...mlbRes };
-
-  // Track balance deltas to batch updates per user
-  const balanceDeltas = {}; // userId â delta amount
+  const balanceDeltas = {};
   let houseBalanceDelta = 0;
   let settled = 0;
-
   for (const bet of pending) {
     const leg = bet.legs?.[0];
     if (!leg?.fightId) continue;
-
     const result = allResults[leg.fightId];
-    if (!result) continue; // game not finished yet
-
+    if (!result) continue;
     const outcome = determineOutcome(leg.fighter, result);
-    if (!outcome) continue; // can't determine â skip rather than guess
-
+    if (!outcome) continue;
     const updatedLegs = (bet.legs || []).map(l => ({ ...l, result: result.scoreStr }));
     await sbPatch(`bets?id=eq.${bet.id}`, { status: outcome, legs: updatedLegs });
-
     if (outcome === "won") {
       const payout = +(bet.stake + bet.potential_win).toFixed(2);
       balanceDeltas[bet.user_id] = +((balanceDeltas[bet.user_id] || 0) + payout).toFixed(2);
       houseBalanceDelta = +(houseBalanceDelta - payout).toFixed(2);
     }
-    // "lost": house already has the stake from bet placement â no change needed
     settled++;
   }
-
-  // Apply balance updates (fetch fresh balance for each user to avoid stale-state overwrite)
   for (const [userId, delta] of Object.entries(balanceDeltas)) {
     if (delta === 0) continue;
     const fresh = await sbGet(`users?id=eq.${userId}&select=id,balance`);
     const u = fresh?.[0];
     if (u) await sbPatch(`users?id=eq.${u.id}`, { balance: +(u.balance + delta).toFixed(2) });
   }
-
   if (house && houseBalanceDelta !== 0) {
     const freshHouse = await sbGet(`users?id=eq.${house.id}&select=id,balance`);
     const h = freshHouse?.[0];
     if (h) await sbPatch(`users?id=eq.${h.id}`, { balance: +(h.balance + houseBalanceDelta).toFixed(2) });
   }
-
   return { settled };
 }
 
-// ââ Main handler âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Main handler ───────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   if (CRON_SECRET && req.headers.authorization !== `Bearer ${CRON_SECRET}`) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -205,15 +196,19 @@ export default async function handler(req, res) {
   const timestamp = new Date().toISOString();
   const results = {};
 
-  // 1. Auto-settle any finished games
+  // 1. Auto-settle finished games (runs every cron tick — no API call)
   const settle = await autoSettle();
-  results._settle = settle.settled > 0 ? `â settled ${settle.settled} bet(s)` : "no bets to settle";
+  results._settle = settle.settled > 0 ? `✓ settled ${settle.settled} bet(s)` : "no bets to settle";
 
-  // 2. Update odds on schedule
+  // 2. Update odds — only at fixed schedule times (max 12 API calls/day)
+  if (!shouldUpdateNow()) {
+    results._odds = `skip — next update at ${nextUpdateLabel()}`;
+    return res.json({ ok: true, timestamp, results });
+  }
+
   for (const [sportId, cfg] of Object.entries(SPORTS)) {
-    const gameTimes = await fetchGameTimes(cfg.espnUrl);
-    if (!gameTimes.length) { results[sportId] = "skip â do games today"; continue; }
-    if (!shouldUpdate(gameTimes)) { results[sportId] = `skip â next at ${nextUpdateLabel(gameTimes)}`; continue; }
+    const hasGames = await hasGamesToday(cfg.espnUrl);
+    if (!hasGames) { results[sportId] = "skip — no games today"; continue; }
 
     try {
       const r = await fetch(
@@ -223,7 +218,7 @@ export default async function handler(req, res) {
       const data = await r.json();
       if (!Array.isArray(data)) { results[sportId] = "bad response"; continue; }
       const stored = await storeOdds(sportId, data);
-      results[sportId] = stored ? `â ${data.length} game(s)` : "supabase write failed";
+      results[sportId] = stored ? `✓ ${data.length} game(s)` : "supabase write failed";
     } catch (e) {
       results[sportId] = `error: ${e.message}`;
     }
