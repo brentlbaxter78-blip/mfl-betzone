@@ -144,7 +144,6 @@ const setOddsCache = (key,data,soon=false) => { try{ localStorage.setItem(`mfl_a
 const getBaselineCache = key => { try{ const s=localStorage.getItem(`mfl_bl_${key}`); const c=s?JSON.parse(s):null; if(c&&Date.now()-c.ts<API_ODDS_TTL_BASELINE)return c.data; }catch{} return null; };
 const setBaselineCache = (key,data) => { try{ localStorage.setItem(`mfl_bl_${key}`,JSON.stringify({data,ts:Date.now()})); }catch{} };
 
-const BETTING_WINDOW_HRS = 5; // odds & betting open this many hours before game
 const ODDS_SPORT_KEYS = {
   soccer: "soccer_fifa_world_cup",  // ← critical: must stay here for WC odds to work
   mlb:    "baseball_mlb",
@@ -463,10 +462,10 @@ const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
 const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET});
 const todayET = () => dateStrET(new Date().toISOString());
-// Before 3am ET, show previous day's completed games (people stay up late)
+// Before 8am ET: show previous day's completed games and keep betting locked
 const isEarlyMorningET = () => {
-  const h=parseInt(new Date().toLocaleString("en-US",{timeZone:ET,hour:"numeric",hour12:false})||"12");
-  return h>=0&&h<3;
+  const h=parseInt(new Date().toLocaleString("en-US",{timeZone:ET,hour:"numeric",hour12:false})||"0");
+  return h>=0&&h<8;
 };
 const yesterdayStrET = () => new Date(Date.now()-86400000).toLocaleDateString("en-CA",{timeZone:ET});
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
@@ -477,9 +476,11 @@ const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
 // Timing — defined after ET so bettingOpensAt/bettingClosesAt can use it
 const isClosed       = dt => new Date() >= new Date(new Date(dt).getTime()-180000);
 const isImminent     = dt => { const d=new Date(dt)-new Date(); return d>8*60*1000&&d<31*60*1000; };
-const isTooEarly     = dt => new Date(dt)-new Date() > BETTING_WINDOW_HRS*3600000;
+// Betting locks before 8am ET regardless of game time
+// At 8am odds update and betting opens for all games that day
+const isTooEarly     = (_dt) => isEarlyMorningET(); // reuses 8am ET check
+const bettingOpensAt = (_dt) => "8:00 AM ET";       // always opens at 8am
 const timeUntil      = dt => { const diff=new Date(dt)-new Date(); if(diff<=0)return null; const mins=Math.floor(diff/60000); if(mins<2)return"Starting now"; if(mins<60)return`Starts in ${mins}m`; const h=Math.floor(mins/60),m=mins%60; return`Starts in ${h}h${m>0?` ${m}m`:""}`; };
-const bettingOpensAt = dt => new Date(new Date(dt).getTime()-BETTING_WINDOW_HRS*3600000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 const bettingClosesAt= dt => new Date(new Date(dt).getTime()-3*60000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 
 // Convert American moneyline to raw implied probability
@@ -495,7 +496,7 @@ const TERMS = [
   {n:"1",t:"Don't leak outside of MFL. What happens in MFL Betzone stays in MFL Betzone. Do not share bet details, balances, or any platform info outside the group."},
   {n:"2",t:"Gamble responsibly. Only bet what you can afford to lose. This is for fun — if it stops being fun, stop betting."},
   {n:"3",t:"No refunds. Once a bet is placed and confirmed, it is final. No cancellations or reversals for any reason. Always verify before confirming."},
-  {n:"4",t:"Betting and live odds open exactly 5 hours before each game's scheduled start time. Opening line estimates may be shown earlier for reference only — no bets can be placed until the 5-hour window. Betting closes 3 minutes before scheduled start, or immediately when a game goes live, whichever comes first."},
+  {n:"4",t:"Odds and betting open every day at 8:00 AM ET. Opening lines may be shown earlier for reference only — no bets can be placed before 8 AM. Betting closes 3 minutes before each game's scheduled start, or immediately when a game goes live, whichever comes first."},
 ];
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
