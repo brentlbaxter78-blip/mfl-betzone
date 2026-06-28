@@ -1063,6 +1063,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   useEffect(()=>{if(wc.length)checkOddsMove(wc,'soccer');},[wc,checkOddsMove]);
   useEffect(()=>{if(mlb.length)checkOddsMove(mlb,'mlb');},[mlb,checkOddsMove]);
 
+  const pendBets=allBets.filter(b=>b.status==="pending");
+
   const USER_TABS=[
     {id:"bet",    icon:"🏆",label:"Games"},
     {id:"mybets", icon:"🎯",label:`My Bets${pending>0?` (${pending})`:""}`},
