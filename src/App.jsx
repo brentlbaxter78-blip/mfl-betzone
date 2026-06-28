@@ -701,6 +701,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [expanded,setExpanded]=useState(null); const [showPw,setShowPw]=useState({});
   const [betNotifs,setBetNotifs]=useState([]);
   const [settleScores,setSettleScores]=useState({});
+  const [lbOpen,setLbOpen]=useState(false);
+  const [lbTab,setLbTab]=useState(0);
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [delConfirmText,setDelConfirmText]=useState("");
@@ -1689,6 +1691,79 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 {user.privacy_public?"🟢 Public":"🔴 Private"}
               </button>
             </div>
+            {/* Leaderboard */}
+            {(()=>{
+              const medals=["🥇","🥈","🥉"];
+              const lbData=[
+                {
+                  icon:"💰",label:"Biggest Bet",sub:"most money on a single bet",
+                  rows:[...allBets].filter(b=>b.status!=="cancelled"&&b.stake>0)
+                    .sort((a,b2)=>b2.stake-a.stake).slice(0,3)
+                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);return{name:u?.display_name||"?",val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""};}),
+                },
+                {
+                  icon:"🏆",label:"Biggest Win",sub:"most money won on a single bet",
+                  rows:[...allBets].filter(b=>b.status==="won")
+                    .sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).slice(0,3)
+                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{name:u?.display_name||"?",val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};}),
+                },
+                {
+                  icon:"🍀",label:"Luckiest Win",sub:"highest payout multiplier",
+                  rows:[...allBets].filter(b=>b.status==="won"&&b.stake>0)
+                    .sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).slice(0,3)
+                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{name:u?.display_name||"?",val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};}),
+                },
+                {
+                  icon:"🎯",label:"Most Bets",sub:"total bets placed",
+                  rows:[...users].filter(u=>u.username!=="__house__"&&u.username!==ADMIN_USER)
+                    .map(u=>{const cnt=allBets.filter(b=>b.user_id===u.id&&b.status!=="cancelled").length;return{name:u.display_name||u.username,val:`${cnt} bet${cnt!==1?"s":""}`,cnt};})
+                    .filter(x=>x.cnt>0).sort((a,b2)=>b2.cnt-a.cnt).slice(0,3),
+                },
+              ];
+              const cur=lbData[lbTab];
+              return(
+                <div style={{...S.card,marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setLbOpen(o=>!o)}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:18}}>🏅</span>
+                      <div><div style={{fontSize:14,fontWeight:800,color:C.gold}}>Leaderboards</div><div style={{fontSize:11,color:C.dim,marginTop:1}}>Top 3 in 4 categories</div></div>
+                    </div>
+                    <span style={{color:C.dim,fontSize:13}}>{lbOpen?"▲":"▼"}</span>
+                  </div>
+                  {lbOpen&&(
+                    <div style={{marginTop:14}}>
+                      {/* Tab selector */}
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6,marginBottom:14}}>
+                        {lbData.map((lb,i)=>(
+                          <button key={i} onClick={()=>setLbTab(i)} style={{background:lbTab===i?C.gold:C.bg,color:lbTab===i?C.bg:C.dim,border:`1px solid ${lbTab===i?C.gold:C.border}`,borderRadius:10,padding:"8px 4px",fontSize:10,fontWeight:700,cursor:"pointer",textAlign:"center",lineHeight:1.3}}>
+                            <div style={{fontSize:16,marginBottom:2}}>{lb.icon}</div>{lb.label}
+                          </button>
+                        ))}
+                      </div>
+                      {/* Leaderboard title */}
+                      <div style={{textAlign:"center",marginBottom:12}}>
+                        <div style={{fontSize:13,fontWeight:700,color:C.text}}>{cur.icon} {cur.label}</div>
+                        <div style={{fontSize:11,color:C.dim,marginTop:2}}>{cur.sub}</div>
+                      </div>
+                      {/* Top 3 */}
+                      {cur.rows.length===0
+                        ?<div style={{textAlign:"center",color:C.dim,fontSize:12,padding:"16px 0"}}>No data yet — place some bets!</div>
+                        :cur.rows.map((row,i)=>(
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:12,background:i===0?"#1A1400":C.bg,border:`1px solid ${i===0?C.gold+"44":C.border}`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+                            <span style={{fontSize:22,flexShrink:0}}>{medals[i]}</span>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:14,fontWeight:800,color:i===0?C.gold:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.name}</div>
+                              {row.sub&&<div style={{fontSize:11,color:C.dim,marginTop:1}}>{row.sub}</div>}
+                            </div>
+                            <div style={{fontSize:16,fontWeight:900,color:i===0?C.gold:C.text,flexShrink:0}}>{row.val}</div>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{...S.card,marginBottom:10}}>
               <div style={{fontSize:14,fontWeight:800,color:C.text,marginBottom:12}}>💵 Cash In / Withdraw</div>
               <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"11px 13px",fontSize:12,color:C.sub,lineHeight:1.75,marginBottom:12}}>
