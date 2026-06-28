@@ -120,10 +120,16 @@ async function fetchFinalResults(sport) {
       if (!h || !a) continue;
       const hn = sport === "soccer" ? normName(h.team?.displayName || "") : (h.team?.displayName || "");
       const an = sport === "soccer" ? normName(a.team?.displayName || "") : (a.team?.displayName || "");
+      // Use ESPN's winner flag — correctly handles regulation, ET, and penalty shootout wins
+      const winnerComp = cs.find(c => c.winner === true);
+      const winnerName = winnerComp
+        ? (sport === "soccer" ? normName(winnerComp.team?.displayName||"") : (winnerComp.team?.displayName||""))
+        : null;
       results[e.id] = {
         t1: hn, t2: an,
         home: parseInt(h.score || 0, 10),
         away: parseInt(a.score || 0, 10),
+        winnerName, // null = genuine draw (group stage); set = definitive winner (incl. ET/pens)
         scoreStr: `${hn} ${h.score || 0} - ${a.score || 0} ${an}`,
       };
     }
@@ -132,11 +138,18 @@ async function fetchFinalResults(sport) {
 }
 
 function determineOutcome(fighter, result) {
-  const { t1, t2, home, away } = result;
+  const { t1, t2, home, away, winnerName } = result;
+  const lastWord = s => s.split(" ").slice(-1)[0];
+  // If ESPN declared a definitive winner (covers regulation, extra time, and penalties)
+  if (winnerName) {
+    if (fighter === "Draw") return "lost"; // definitive winner = no draw
+    if (fighter === winnerName || lastWord(fighter) === lastWord(winnerName)) return "won";
+    return "lost";
+  }
+  // No winner declared — score comparison (group stage draws, or undecided)
   if (fighter === "Draw") return home === away ? "won" : "lost";
   if (fighter === t1) return home > away ? "won" : home < away ? "lost" : null;
   if (fighter === t2) return away > home ? "won" : away < home ? "lost" : null;
-  const lastWord = s => s.split(" ").slice(-1)[0];
   if (lastWord(t1) === lastWord(fighter)) return home > away ? "won" : home < away ? "lost" : null;
   if (lastWord(t2) === lastWord(fighter)) return away > home ? "won" : away < home ? "lost" : null;
   return null;
