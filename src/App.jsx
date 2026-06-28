@@ -1688,14 +1688,45 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {open&&(
                         <div style={{marginTop:10,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
                           {p.privacy_public?(
-                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-                              {[{l:"Deposited",v:`₿${(p.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(p.cash_out||0).toFixed(2)}`},{l:"P&L",v:`${pp>=0?"+":""}₿${pp.toFixed(2)}`,c:pp>=0?C.green:"#FF5252"}].map(s=>(
-                                <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}>
-                                  <div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div>
-                                  <div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div>
-                                </div>
-                              ))}
-                            </div>
+                            <>
+                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                                {[{l:"Deposited",v:`₿${(p.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(p.cash_out||0).toFixed(2)}`},{l:"P&L",v:`${pp>=0?"+":""}₿${pp.toFixed(2)}`,c:pp>=0?C.green:"#FF5252"}].map(s=>(
+                                  <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}>
+                                    <div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div>
+                                    <div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              {pb.length>0?(
+                                <>
+                                  <div style={{fontSize:10,fontWeight:700,color:C.dim,letterSpacing:"0.08em",marginBottom:8}}>RECENT BETS</div>
+                                  {pb.slice(0,8).map(b=>{
+                                    const leg=b.legs?.[0];
+                                    if(!leg) return null;
+                                    const won=b.status==="won", lost=b.status==="lost", pend=b.status==="pending";
+                                    return(
+                                      <div key={b.id} style={{background:C.bg,borderRadius:10,padding:"10px 12px",marginBottom:6,border:`1px solid ${won?C.green+"44":lost?"#FF525244":C.border}`}}>
+                                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                                          <div style={{flex:1,minWidth:0}}>
+                                            <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:2}}>{betLabel(leg.fighter)}</div>
+                                            <div style={{fontSize:10,color:C.dim,marginBottom:2}}>{leg.t1} vs {leg.t2}</div>
+                                            <div style={{fontSize:10,color:C.dim}}>{fmtDate(b.placed_at)}</div>
+                                          </div>
+                                          <div style={{textAlign:"right",flexShrink:0,marginLeft:10}}>
+                                            <div style={{fontSize:11,fontWeight:700,color:won?C.green:lost?"#FF5252":C.gold}}>
+                                              {won?"🏆 WON":lost?"❌ LOST":"⏳ PENDING"}
+                                            </div>
+                                            <div style={{fontSize:10,color:C.dim,marginTop:2}}>₿{b.stake} to win ₿{b.potential_win}</div>
+                                          </div>
+                                        </div>
+                                        {leg.result&&<div style={{fontSize:10,color:C.dim,marginTop:5,paddingTop:5,borderTop:`1px solid ${C.border}`}}>Final: {leg.result}</div>}
+                                      </div>
+                                    );
+                                  })}
+                                  {pb.length>8&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"4px"}}>+{pb.length-8} more bets</div>}
+                                </>
+                              ):<div style={{fontSize:12,color:C.dim,textAlign:"center",padding:"8px 0"}}>No bets yet</div>}
+                            </>
                           ):<div style={{textAlign:"center",padding:"8px",color:C.dim,fontSize:12}}>🔒 Stats private</div>}
                         </div>
                       )}
