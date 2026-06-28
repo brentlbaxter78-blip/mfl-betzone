@@ -5,8 +5,6 @@ const SUPA_URL = "https://nuiffniijnbzzkvxxtle.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51aWZmbmlpam5ienprdnh4dGxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDA5MzgsImV4cCI6MjA5NzkxNjkzOH0.dlKFKRYwZIU_GefbPV7aDhOab5B7jGByVTAAV3uQ8C8";
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
 const TEST_USER = "test"; // test account — admin can reset to wipe transactions from P&L
-// ↓ Get a FREE key at the-odds-api.com (500 req/month, no credit card)
-const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || ""; // set in Vercel → Settings → Environment Variables
 
 const sb = async (path, opts = {}) => {
   const { method = "GET", body, prefer = "return=representation" } = opts;
@@ -505,7 +503,7 @@ export default function App(){
   const [mlbLoading,setMlbLoading]=useState(true);
   const showToast=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
   const refreshWC=useCallback(async()=>{const g=await fetchWC();setWc(g);setWcLoading(false);},[]);
-  const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]); 
+  const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]);
   useEffect(()=>{refreshWC();refreshMLB();},[refreshWC,refreshMLB]);
   useEffect(()=>{
     const iv=setInterval(()=>{if(!document.hidden){refreshWC();refreshMLB();}},2*60*1000);
@@ -1235,7 +1233,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const now=new Date();
               const isBaselineMode=wc.length>0&&wc.every(g=>isTooEarly(g.dt)&&!g.isLive&&!g.isFinal);
               const anySoon=wc.some(g=>isImminent(g.dt));
-              const src=wc.some(g=>g.usingRealOdds)?(wc.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"):ODDS_API_KEY?"LOADING…":null;
+              const src=wc.some(g=>g.usingRealOdds)?(wc.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"):"LOADING…";
               // Clock-based timer (same for all users, not tied to page load time)
               let timerLabel=null;
               if(isBaselineMode&&wc.length>0){
@@ -1437,7 +1435,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const now=new Date();
               const isBaselineMode=mlb.length>0&&mlb.every(g=>isTooEarly(g.dt)&&!g.isLive&&!g.isFinal);
               const anySoon=mlb.some(g=>isImminent(g.dt));
-              const src=mlb.some(g=>g.usingRealOdds)?(mlb.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"):ODDS_API_KEY?"LOADING…":null;
+              const src=mlb.some(g=>g.usingRealOdds)?(mlb.find(g=>g.book)?.book?.toUpperCase()||"FANDUEL"):"LOADING…";
               let timerLabel=null;
               if(isBaselineMode&&mlb.length>0){
                 const earliest=mlb.reduce((a,b)=>new Date(a.dt)<new Date(b.dt)?a:b);
