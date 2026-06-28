@@ -175,25 +175,16 @@ const fetchOddsAPI = async (sport, soon=false) => {
   // 2. Fall back to local localStorage cache
   const cached = getOddsCache(key, soon);
   if (cached) return cached;
-  // 3. Last resort: call The Odds API directly (only if key available)
-  if (!ODDS_API_KEY) return null;
-  try {
-    const r = await fetch(
-      `https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`
-    );
-    if (!r.ok) return null;
-    const data = await r.json();
-    if (!Array.isArray(data)) return null;
-    setOddsCache(key, data, soon);
-    return data;
-  } catch { return null; }
+  // 3. Client never calls The Odds API directly — cron handles all API calls
+  // If Supabase has no data yet, show calculated fallback odds instead
+  return null;
 };
 
 // Fetch baseline odds (morning display, betting still locked)
 const fetchBaselineOdds = async (sport) => {
   const key = ODDS_SPORT_KEYS[sport];
   if(!key) return null;
-  // Same priority: Supabase → localStorage → direct call
+  // Same priority: Supabase → localStorage — never calls API directly
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/odds_cache?id=eq.${sport}&select=data`, {
       headers: { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` }
@@ -202,15 +193,8 @@ const fetchBaselineOdds = async (sport) => {
   } catch {}
   const cached = getBaselineCache(key);
   if(cached) return cached;
-  if(!ODDS_API_KEY) return null;
-  try{
-    const r = await fetch(`https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=american`);
-    if(!r.ok) return null;
-    const data = await r.json();
-    if(!Array.isArray(data)) return null;
-    setBaselineCache(key, data);
-    return data;
-  } catch { return null; }
+  // Cron handles all API calls — return null so calculated fallback is used
+  return null;
 };
 
 // Extract odds for a specific game from Odds API response
@@ -947,6 +931,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
+  };
+  const forceRefreshOdds=async()=>{
+    try{
+      showToast("Refreshing odds…");
+      const r=await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}});
+      const d=await r.json();
+      const sportResults=Object.entries(d.results||{}).filter(([k])=>k!=="__settle"&&k!=="_settle").map(([k,v])=>`${k}: ${v}`).join(" · ");
+      showToast(sportResults||"Odds refreshed ✓");
+    }catch(e){showToast("Error refreshing odds","error");}
   };
   const houseWithdraw=async()=>{
     const a=parseFloat(houseCash);if(!a||a<=0)return showToast("Enter an amount","error");
@@ -1831,6 +1824,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 <input style={S.stakeInp} type="number" placeholder="Amount to withdraw from pot" value={houseCash} onChange={e=>setHouseCash(e.target.value)} min="0"/>
               </div>
               <button style={{...S.btn,width:"100%",padding:"13px"}} onClick={houseWithdraw}>LOG CASH WITHDRAWAL</button>
+              <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+                <div style={{fontSize:11,color:C.dim,marginBottom:8}}>If odds changed significantly right before a game (injury, lineup news) — use sparingly, burns 1-2 API credits from your monthly buffer.</div>
+                <button style={{...S.ghost,width:"100%",padding:"11px",fontSize:13}} onClick={forceRefreshOdds}>🔄 Force Refresh Odds Now</button>
+              </div>
             </div>
 
             {/* Settle pending bets */}
