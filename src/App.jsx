@@ -78,7 +78,7 @@ const MLB_STR = {
   "Toronto Blue Jays":1040,"St. Louis Cardinals":1030,"Detroit Tigers":1020,
   "Cincinnati Reds":1010,"Los Angeles Angels":1000,"Pittsburgh Pirates":980,
   "Kansas City Royals":975,"Miami Marlins":960,"Washington Nationals":950,
-  "Oakland Athletics":940,"Colorado Rockies":930,"Chicago White Sox":900,
+  "Athletics":940,"Colorado Rockies":930,"Chicago White Sox":900,
 };
 let _mlbCache = {}, _mlbCacheTime = 0;
 const mlbOdds = (t1, t2) => { // t1 = home team (+30 home field advantage)
@@ -775,8 +775,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         // Fetch fresh user balance then add total in one patch (avoids stale-state overwrite on loop)
         const totalRefund=toRefund.reduce((a,b)=>a+b.stake,0);
         const freshUser=(await db.getUser(session.userId))?.[0];
+        const freshHouse=(await db.getHouse())?.[0];
         if(freshUser) await db.patchUser(session.userId,{balance:+(freshUser.balance+totalRefund).toFixed(2)});
-        if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance-totalRefund).toFixed(2)});
+        if(freshHouse) await db.patchUser(freshHouse.id,{balance:+(freshHouse.balance-totalRefund).toFixed(2)});
         showToast(`Game postponed — ₿${totalRefund.toFixed(2)} auto-refunded`);
         await load();
       }catch(e){}
@@ -820,8 +821,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const{gid,team,odds,stake,win,matchup,sport}=confirm; const g=findGame(gid);
     setConfirm(null);
     try{
-      await db.patchUser(session.userId,{balance:+(user.balance-stake).toFixed(2)});
-      // house is only in state for admins — fetch fresh so user bets always update the pot
+      // Fetch fresh balance to catch any race condition (another tab, another device)
+      const freshUser=(await db.getUser(session.userId))?.[0];
+      if(!freshUser)throw new Error("Could not verify balance");
+      if(stake>freshUser.balance){showToast(`Balance changed — you only have ₿${freshUser.balance.toFixed(2)}`,"error");return;}
+      await db.patchUser(session.userId,{balance:+(freshUser.balance-stake).toFixed(2)});
       const houseAcct=(await db.getHouse())?.[0];
       if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+stake).toFixed(2)});
       const eventName=sport==="mlb"?"MLB 2026":"FIFA World Cup 2026";
@@ -842,9 +846,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     try{
       await db.patchBet(betId,{status:outcome,legs:updatedLegs});
       if(outcome==="won"){
-        const payout=+(bet.stake+bet.potential_win).toFixed(2);
-        await db.patchUser(player.id,{balance:+(player.balance+payout).toFixed(2)});
-        if(house) await db.patchUser(house.id,{balance:+(house.balance-payout).toFixed(2)});
+        const payout=+(bet.stake+(bet.potential_win||0)).toFixed(2);
+        // Fetch fresh balances to avoid stale-state overwrite
+        const [freshPlayer,freshHouse]=await Promise.all([db.getUser(player.id),db.getHouse()]);
+        const fp=freshPlayer?.[0], fh=freshHouse?.[0];
+        if(fp) await db.patchUser(fp.id,{balance:+(fp.balance+payout).toFixed(2)});
+        if(fh) await db.patchUser(fh.id,{balance:+(fh.balance-payout).toFixed(2)});
         showToast(`${player.display_name} paid ₿${payout}`);
       }else{
         showToast(`Bet marked as lost — house keeps ₿${bet.stake}`);
@@ -900,7 +907,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     if(!a||a<=0)return showToast("Enter an amount","error");
     if(a<10)return showToast("Minimum withdrawal is $10","error");
     if(!Number.isInteger(a))return showToast("Whole dollars only — no cents (e.g. $10, $20)","error");
-    const maxWithdraw=Math.floor(user.balance);
+    const maxWithdraw=Math.floor(user.balance||0);
     if(maxWithdraw<10)return showToast(`Balance (₿${(user.balance||0).toFixed(2)}) is too low — minimum $10`,"error");
     if(a>maxWithdraw)return showToast(`Max you can withdraw is $${maxWithdraw}`,"error");
     setCash("");startPending("withdraw",a);
@@ -914,12 +921,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     if(!tx||!u)return;
     try{
       await db.patchTx(txId,{status:"approved"});
+      // Fetch fresh balance to avoid stale-state overwrite
+      const fresh=(await db.getUser(u.id))?.[0];
       if(tx.type==="deposit"){
-        // Deposit approved: add to player balance and track cash_in
-        await db.patchUser(u.id,{balance:+(u.balance+tx.amount).toFixed(2),cash_in:+((u.cash_in||0)+tx.amount).toFixed(2)});
+        if(fresh) await db.patchUser(u.id,{balance:+(fresh.balance+tx.amount).toFixed(2),cash_in:+((fresh.cash_in||0)+tx.amount).toFixed(2)});
       }else{
         // Withdrawal approved: balance already deducted when requested — just track cash_out
-        await db.patchUser(u.id,{cash_out:+((u.cash_out||0)+tx.amount).toFixed(2)});
+        if(fresh) await db.patchUser(u.id,{cash_out:+((fresh.cash_out||0)+tx.amount).toFixed(2)});
       }
       showToast("Approved ✓");await load();
     }catch(e){showToast("Error","error");}
@@ -931,17 +939,22 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     try{
       await db.patchTx(txId,{status:"rejected"});
       // Withdrawal rejected: refund the balance that was deducted at request time
-      if(tx.type==="withdraw"&&u)await db.patchUser(u.id,{balance:+(u.balance+tx.amount).toFixed(2)});
+      if(tx.type==="withdraw"&&u){
+        const fresh=(await db.getUser(u.id))?.[0];
+        if(fresh) await db.patchUser(u.id,{balance:+(fresh.balance+tx.amount).toFixed(2)});
+      }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
   };
   const houseWithdraw=async()=>{
     const a=parseFloat(houseCash);if(!a||a<=0)return showToast("Enter an amount","error");
     if(!house)return showToast("House account not found","error");
-    if(a>house.balance)return showToast("Not enough in the pot","error");
     try{
-      await db.patchUser(house.id,{balance:+(house.balance-a).toFixed(2),cash_out:+((house.cash_out||0)+a).toFixed(2)});
-      await db.addTx({user_id:house.id,type:"withdraw",amount:a,status:"approved",note:"House cash withdrawal"});
+      const fresh=(await db.getHouse())?.[0];
+      if(!fresh)return showToast("House account not found","error");
+      if(a>fresh.balance)return showToast("Not enough in the pot","error");
+      await db.patchUser(fresh.id,{balance:+(fresh.balance-a).toFixed(2),cash_out:+((fresh.cash_out||0)+a).toFixed(2)});
+      await db.addTx({user_id:fresh.id,type:"withdraw",amount:a,status:"approved",note:"House cash withdrawal"});
       setHouseCash("");showToast(`₿${a} logged — take $${a} from the pot`);await load();
     }catch(e){showToast("Error","error");}
   };
@@ -951,9 +964,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     if(!Number.isInteger(a))return showToast("Whole dollars only","error");
     if(!house)return showToast("House account not found","error");
     try{
-      // Track as cash_in so it's excluded from P&L (seed ≠ earned profit)
-      await db.patchUser(house.id,{balance:+(house.balance+a).toFixed(2),cash_in:+((house.cash_in||0)+a).toFixed(2)});
-      await db.addTx({user_id:house.id,type:"deposit",amount:a,status:"approved",note:"House seed capital"});
+      const fresh=(await db.getHouse())?.[0];
+      if(!fresh)return showToast("House account not found","error");
+      await db.patchUser(fresh.id,{balance:+(fresh.balance+a).toFixed(2),cash_in:+((fresh.cash_in||0)+a).toFixed(2)});
+      await db.addTx({user_id:fresh.id,type:"deposit",amount:a,status:"approved",note:"House seed capital"});
       setHouseSeed("");showToast(`₿${a} seeded into the pot — this won't count toward earnings`);await load();
     }catch(e){showToast("Error seeding house","error");}
   };
@@ -963,8 +977,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     if(!bet||!player)return;
     try{
       await db.patchBet(betId,{status:"cancelled"});
-      await db.patchUser(player.id,{balance:+(player.balance+bet.stake).toFixed(2)});
-      if(house) await db.patchUser(house.id,{balance:+(house.balance-bet.stake).toFixed(2)});
+      // Fetch fresh balances to avoid stale-state overwrite
+      const [freshPlayer,freshHouse]=await Promise.all([db.getUser(player.id),db.getHouse()]);
+      const fp=freshPlayer?.[0], fh=freshHouse?.[0];
+      if(fp) await db.patchUser(fp.id,{balance:+(fp.balance+bet.stake).toFixed(2)});
+      if(fh) await db.patchUser(fh.id,{balance:+(fh.balance-bet.stake).toFixed(2)});
       showToast(`₿${bet.stake} refunded to ${player.display_name}`);
       await load();
     }catch(e){showToast("Error refunding bet","error");}
@@ -1076,7 +1093,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         const leg=bet.legs?.[0];
         const won=bet.status==="won";
         const cancelled=bet.status==="cancelled";
-        const payout=+(bet.stake+bet.potential_win).toFixed(2);
+        const payout=+(bet.stake+(bet.potential_win||0)).toFixed(2);
         return(
           <div style={S.over}>
             <div style={{...S.modal,textAlign:"center"}}>
@@ -1107,7 +1124,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 )}
                 <div style={{display:"flex",gap:16,fontSize:12,color:C.dim,marginTop:8,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
                   <span>Staked <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
-                  <span>{won?"Profit":"Loss"} <strong style={{color:won?C.green:"#E53935"}}>{won?"+":"-"}₿{won?bet.potential_win.toFixed(2):bet.stake}</strong></span>
+                  <span>{won?"Profit":"Loss"} <strong style={{color:won?C.green:"#E53935"}}>{won?"+":"-"}₿{won?(bet.potential_win||0).toFixed(2):bet.stake}</strong></span>
                 </div>
               </div>}
               <button style={{...S.btn,width:"100%",padding:"15px",background:cancelled?"#FF9800":won?C.green:C.gold}} onClick={()=>dismissNotif(bet.id)}>
@@ -1253,12 +1270,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
                       <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
                       <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
-                        <Flag team={b.legs[0].fighter} size={15}/>
-                        <span style={{color:C.sub}}>{b.legs[0].fighter}</span>
-                        <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                        <Flag team={b.legs?.[0]?.fighter} size={15}/>
+                        <span style={{color:C.sub}}>{b.legs?.[0]?.fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                         <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
                       </div>
-                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs[0].result}</div>}
+                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
                     </div>
                   ))}
                   {/* Bet display — locked odds for users who have bet, live odds for everyone else */}
@@ -1268,9 +1285,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:8}}>✅ YOUR LOCKED ODDS</div>
                       {myGameBets.map(b=>(
                         <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:13,flexWrap:"wrap",marginBottom:4}}>
-                          <Flag team={b.legs[0].fighter} size={16}/>
-                          <strong style={{color:C.gold}}>{b.legs[0].fighter}</strong>
-                          <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                          <Flag team={b.legs?.[0]?.fighter} size={16}/>
+                          <strong style={{color:C.gold}}>{b.legs?.[0]?.fighter}</strong>
+                          <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                           <span style={{color:C.dim}}>·</span>
                           <span style={{color:C.gold}}>₿{b.stake}</span>
                           <span style={{color:C.dim}}>to win</span>
@@ -1453,12 +1470,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
                       <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
                       <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
-                        <MLBLogo abbr={b.legs[0].fighter===g.t1?g.abbr1:g.abbr2} size={15}/>
-                        <span style={{color:C.sub}}>{b.legs[0].fighter}</span>
-                        <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                        <MLBLogo abbr={b.legs?.[0]?.fighter===g.t1?g.abbr1:g.abbr2} size={15}/>
+                        <span style={{color:C.sub}}>{b.legs?.[0]?.fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                         <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
                       </div>
-                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs[0].result}</div>}
+                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
                     </div>
                   ))}
                   {myGameBets.length>0&&!isAdmin&&!showOddsAnyway.has(g.id)?(
@@ -1466,9 +1483,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:8}}>✅ YOUR LOCKED ODDS</div>
                       {myGameBets.map(b=>(
                         <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:13,flexWrap:"wrap",marginBottom:4}}>
-                          <MLBLogo abbr={b.legs[0].fighter===g.t1?g.abbr1:g.abbr2} size={16}/>
-                          <strong style={{color:C.gold}}>{b.legs[0].fighter}</strong>
-                          <span style={{color:C.dim}}>({fmtO(b.legs[0].odds)})</span>
+                          <MLBLogo abbr={b.legs?.[0]?.fighter===g.t1?g.abbr1:g.abbr2} size={16}/>
+                          <strong style={{color:C.gold}}>{b.legs?.[0]?.fighter}</strong>
+                          <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                           <span style={{color:C.dim}}>·</span>
                           <span style={{color:C.gold}}>₿{b.stake}</span>
                           <span style={{color:C.dim}}>to win</span>
@@ -1716,7 +1733,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                                             <div style={{fontSize:11,fontWeight:700,color:won?C.green:lost?"#FF5252":C.gold}}>
                                               {won?"🏆 WON":lost?"❌ LOST":"⏳ PENDING"}
                                             </div>
-                                            <div style={{fontSize:10,color:C.dim,marginTop:2}}>₿{b.stake} to win ₿{b.potential_win}</div>
+                                            <div style={{fontSize:10,color:C.dim,marginTop:2}}>₿{b.stake} to win ₿{(b.potential_win||0).toFixed(2)}</div>
                                           </div>
                                         </div>
                                         {leg.result&&<div style={{fontSize:10,color:C.dim,marginTop:5,paddingTop:5,borderTop:`1px solid ${C.border}`}}>Final: {leg.result}</div>}
@@ -1832,7 +1849,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   ))}
                   <div style={{display:"flex",gap:12,fontSize:12,color:C.dim,margin:"8px 0 10px",paddingTop:8,borderTop:`1px solid ${C.border}`}}>
                     <span>Stake <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
-                    <span>Payout if won <strong style={{color:C.green}}>₿{+(bet.stake+bet.potential_win).toFixed(2)}</strong></span>
+                    <span>Payout if won <strong style={{color:C.green}}>₿{+(bet.stake+(bet.potential_win||0)).toFixed(2)}</strong></span>
                   </div>
                   {/* Score — auto-fetched from ESPN when available, editable */}
                   <div style={{position:"relative",marginBottom:8}}>
@@ -1848,7 +1865,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     {autoFilledIds.has(bet.id)&&settleScores[bet.id]&&<span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em"}}>AUTO ✓</span>}
                   </div>
                   <div style={{display:"flex",gap:8}}>
-                    <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+bet.potential_win).toFixed(2)}</button>
+                    <button style={{...S.btn,flex:1,padding:"11px",background:"#00C853"}} onClick={()=>settleBet(bet.id,"won")}>🏆 WON — Pay ₿{+(bet.stake+(bet.potential_win||0)).toFixed(2)}</button>
                     <button style={{...S.btn,flex:1,padding:"11px",background:"#555"}} onClick={()=>settleBet(bet.id,"lost")}>❌ LOST</button>
                   </div>
                   <button style={{marginTop:6,background:"none",border:"1px solid #FF980033",color:"#FF9800",borderRadius:8,padding:"7px",fontSize:10,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>cancelBet(bet.id)}>↩ Cancel bet &amp; refund ₿{bet.stake}</button>
