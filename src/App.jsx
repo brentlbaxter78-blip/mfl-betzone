@@ -344,15 +344,20 @@ const fetchMLB = async () => {
     const today = todayET();
     let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
 
-    if (evs.length===0 && isEarlyMorningET()) {
+    // Show yesterday's games if:
+    // A) Before 3am ET (people stay up late), OR
+    // B) ESPN already rolled over to next day before midnight (common ~11pm ET)
+    if (evs.length===0) {
       const yd = yesterdayStrET();
-      evs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
-      if (evs.length===0) {
+      let ydEvs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
+      if (ydEvs.length===0) {
         try {
           const ydRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${yd.replace(/-/g,"")}`);
-          if (ydRes.ok) { const ydD=await ydRes.json(); evs=(ydD.events||[]).filter(e=>dateStrET(e.date)===yd); }
+          if (ydRes.ok) { const ydD=await ydRes.json(); ydEvs=(ydD.events||[]).filter(e=>dateStrET(e.date)===yd); }
         } catch {}
       }
+      // Only use yesterday if all events are final (don't replace live today games)
+      if (ydEvs.length>0 && ydEvs.every(e=>e.status?.type?.state==="post")) evs=ydEvs;
     }
 
     if(!evs.length) return [];
