@@ -1819,7 +1819,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div>
                 <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:4,marginTop:4}}>The Group</div>
                 <div style={{fontSize:11,color:C.dim,marginBottom:12}}>{users.length} player{users.length!==1?"s":""} on MFL Betzone</div>
-                {users.map(p=>{
+                {users.filter(p=>isAdmin||p.username!==TEST_USER).map(p=>{
                   const pb=byUser[p.id]||[];
                   const pp=pb.reduce((a,b)=>b.status==="won"?a+b.potential_win:b.status==="lost"?a-b.stake:a,0);
                   const open=expanded===p.id;
