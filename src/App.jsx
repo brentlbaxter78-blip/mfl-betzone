@@ -298,12 +298,7 @@ const fetchESPN = async () => {
       const book = bookOdds?.book || (eO1?"ESPN BET":null);
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
-      // Apply our vig on top of real book odds (strip their margin, add ours)
-      if(usingRealOdds){
-        if(oDraw){ const v=vigify3(o1,oDraw,o2); o1=v.o1; oDraw=v.oDraw; o2=v.o2; }
-        else { const v=vigify2(o1,o2); o1=v.o1; o2=v.o2; }
-      }
-
+      // Use FanDuel/book odds directly — no extra vig added on top
       // Persist odds before game ends so final score card shows real pre-game lines
       if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
       else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
@@ -413,9 +408,7 @@ const fetchMLB = async () => {
       let o2 = bookOdds?.o2 ?? null;
       const book = bookOdds?.book || null;
 
-      // Apply our vig on top of real book odds (strip their margin, add ours)
-      if(o1&&o2){ const v=vigify2(o1,o2); o1=v.o1; o2=v.o2; }
-
+      // Use FanDuel/book odds directly — no extra vig added on top
       // Persist real odds so they survive after game ends (ESPN & Odds API both drop odds post-game)
       if(usingRealOdds) saveOdds(e.id,{o1,o2});
       const saved = loadOdds(e.id);
@@ -502,26 +495,10 @@ const timeUntil      = dt => { const diff=new Date(dt)-new Date(); if(diff<=0)re
 const bettingOpensAt = dt => new Date(new Date(dt).getTime()-BETTING_WINDOW_HRS*3600000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 const bettingClosesAt= dt => new Date(new Date(dt).getTime()-3*60000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 
-// Convert American moneyline to raw implied probability (before any vig)
-const mlToProb = o => o < 0 ? Math.abs(o)/(Math.abs(o)+100) : 100/(o+100);
-// Raw AML conversion — no vig applied (used when vig is already factored into the probability)
-const toAMLRaw = p => p >= 0.5 ? -Math.round(p/(1-p)*100) : +Math.round((1-p)/p*100);
-
-// Strip the bookmaker's vig from real odds, apply our own margin on top.
-// Separate from VIG (10%) which is used for calculated fallback odds from scratch.
-// 5% extra on real FanDuel lines is subtle — friends won't notice vs checking FanDuel directly.
-const EXTRA_VIG = 0.05; // 5% minimum — applied on top of real book odds
-// Smart vigify: applies 5% OR keeps FanDuel's rate if they already charge more (e.g. WC ~10%)
-// This means MLB (~4% FD) gets bumped to 5%, WC (~10% FD) stays unchanged
-const vigify2 = (o1, o2) => {
-  const p1=mlToProb(o1), p2=mlToProb(o2), s=p1+p2;
-  const vig = Math.max(s-1, EXTRA_VIG); // floor at FanDuel's existing overround
-  return { o1: toAMLRaw(p1/s*(1+vig)), o2: toAMLRaw(p2/s*(1+vig)) };
-};
-const vigify3 = (o1, od, o2) => {
-  const p1=mlToProb(o1), pd=mlToProb(od), p2=mlToProb(o2), s=p1+pd+p2;
-  const vig = Math.max(s-1, EXTRA_VIG);
-  return { o1: toAMLRaw(p1/s*(1+vig)), oDraw: toAMLRaw(pd/s*(1+vig)), o2: toAMLRaw(p2/s*(1+vig)) };
+// Convert American moneyline to raw implied probability
+const mlToProb = o => {
+  if(o===null||o===undefined||isNaN(+o)) return 0.5;
+  return o < 0 ? Math.abs(o)/(Math.abs(o)+100) : 100/(o+100);
 };
 // Persist pre-game odds so they survive after the game ends (Odds API drops them post-game)
 const saveOdds = (id, odds) => { try{ localStorage.setItem(`mfl_o_${id}`, JSON.stringify(odds)); }catch{} };
