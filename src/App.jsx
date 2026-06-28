@@ -1694,28 +1694,30 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {/* Leaderboard */}
             {(()=>{
               const medals=["🥇","🥈","🥉"];
+              const isTestOrAdmin=u=>u?.username===TEST_USER||u?.username===ADMIN_USER||u?.username==="__house__";
+              const lbBets=allBets.filter(b=>{const u=users.find(u2=>u2.id===b.user_id);return!isTestOrAdmin(u);});
               const lbData=[
                 {
                   icon:"💰",label:"Biggest Bet",sub:"most money on a single bet",
-                  rows:[...allBets].filter(b=>b.status!=="cancelled"&&b.stake>0)
+                  rows:[...lbBets].filter(b=>b.status!=="cancelled"&&b.stake>0)
                     .sort((a,b2)=>b2.stake-a.stake).slice(0,3)
                     .map(b=>{const u=users.find(u2=>u2.id===b.user_id);return{name:u?.display_name||"?",val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""};}),
                 },
                 {
                   icon:"🏆",label:"Biggest Win",sub:"most money won on a single bet",
-                  rows:[...allBets].filter(b=>b.status==="won")
+                  rows:[...lbBets].filter(b=>b.status==="won")
                     .sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).slice(0,3)
                     .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{name:u?.display_name||"?",val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};}),
                 },
                 {
                   icon:"🍀",label:"Luckiest Win",sub:"highest payout multiplier",
-                  rows:[...allBets].filter(b=>b.status==="won"&&b.stake>0)
+                  rows:[...lbBets].filter(b=>b.status==="won"&&b.stake>0)
                     .sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).slice(0,3)
                     .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{name:u?.display_name||"?",val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};}),
                 },
                 {
                   icon:"🎯",label:"Most Bets",sub:"total bets placed",
-                  rows:[...users].filter(u=>u.username!=="__house__"&&u.username!==ADMIN_USER)
+                  rows:[...users].filter(u=>!isTestOrAdmin(u))
                     .map(u=>{const cnt=allBets.filter(b=>b.user_id===u.id&&b.status!=="cancelled").length;return{name:u.display_name||u.username,val:`${cnt} bet${cnt!==1?"s":""}`,cnt};})
                     .filter(x=>x.cnt>0).sort((a,b2)=>b2.cnt-a.cnt).slice(0,3),
                 },
