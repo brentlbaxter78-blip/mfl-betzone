@@ -1706,7 +1706,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               const medals=["🥇","🥈","🥉"];
               const isTestOrAdmin=u=>u?.username===TEST_USER||u?.username===ADMIN_USER||u?.username==="__house__";
               const lbName=u=>u?.display_name||u?.username||"Unknown";
-              const lbBets=allBets.filter(b=>{const u=users.find(u2=>u2.id===b.user_id);return!isTestOrAdmin(u)&&!!u;});
+              const lbBets=allBets.filter(b=>{const u=users.find(u2=>u2.id===b.user_id);return!isTestOrAdmin(u);});
               const lbData=[
                 {
                   icon:"💰",label:"Biggest Bet",sub:"most money on a single bet",
@@ -1772,6 +1772,28 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           </div>
                         ))
                       }
+                      {/* Show current user's rank if not in top 3 */}
+                      {(()=>{
+                        const myName=lbName(users.find(u=>u.id===session.userId));
+                        const inTop3=cur.rows.some(r=>r.name===myName);
+                        if(inTop3||cur.rows.length===0) return null;
+                        // Find my full rank
+                        const allRows=(()=>{
+                          if(lbTab===0) return [...lbBets].filter(b=>b.status!=="cancelled"&&b.stake>0).sort((a,b2)=>b2.stake-a.stake).map(b=>({uid:b.user_id,val:b.stake}));
+                          if(lbTab===1) return [...lbBets].filter(b=>b.status==="won").sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).map(b=>({uid:b.user_id,val:b.stake+(b.potential_win||0)}));
+                          if(lbTab===2) return [...lbBets].filter(b=>b.status==="won"&&b.stake>0).sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).map(b=>({uid:b.user_id,val:(b.stake+(b.potential_win||0))/b.stake}));
+                          return [...users].filter(u=>!isTestOrAdmin(u)).sort((a,b2)=>allBets.filter(b=>b.user_id===b2.id).length-allBets.filter(b=>b.user_id===a.id).length).map(u=>({uid:u.id,val:0}));
+                        })();
+                        const myRank=allRows.findIndex(r=>r.uid===session.userId)+1;
+                        if(myRank===0) return null;
+                        return(
+                          <div style={{marginTop:4,padding:"10px 14px",borderRadius:12,border:`1px solid ${C.gold}44`,background:"#0D1A0D",display:"flex",alignItems:"center",gap:12}}>
+                            <span style={{fontSize:16,color:C.dim,flexShrink:0}}>#{myRank}</span>
+                            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:C.green}}>You</div></div>
+                            <div style={{fontSize:11,color:C.dim}}>outside top 3</div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
