@@ -1729,9 +1729,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 },
                 {
                   icon:"🎯",label:"Most Bets",sub:"total bets placed",
-                  rows:[...users].filter(u=>!isTestOrAdmin(u))
-                    .map(u=>{const cnt=allBets.filter(b=>b.user_id===u.id&&b.status!=="cancelled").length;return{name:u.display_name||u.username,val:`${cnt} bet${cnt!==1?"s":""}`,cnt};})
-                    .filter(x=>x.cnt>0).sort((a,b2)=>b2.cnt-a.cnt).slice(0,3),
+                  rows:Object.entries(
+                    allBets.filter(b=>b.status!=="cancelled").reduce((acc,b)=>{
+                      const u=findUser(b.user_id);
+                      if(isTestOrAdmin(u)) return acc;
+                      acc[b.user_id]=(acc[b.user_id]||0)+1;
+                      return acc;
+                    },{})
+                  ).map(([uid,cnt])=>({name:lbName(uid),val:`${cnt} bet${cnt!==1?"s":""}`,cnt}))
+                  .sort((a,b2)=>b2.cnt-a.cnt).slice(0,3),
                 },
               ];
               const cur=lbData[lbTab];
