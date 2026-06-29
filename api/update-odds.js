@@ -25,10 +25,13 @@ const SPORTS = {
   },
 };
 
-// Fixed daily update hours (ET) — 7 per sport = 14 total API calls/day max
-const UPDATE_HOURS_ET = [8, 10, 12, 15, 17, 19, 21];
+// Fixed daily update hours (ET) — keeps odds fresh during the day
+// 8am removed: next-day odds now fetched automatically when last game ends
+const UPDATE_HOURS_ET = [10, 12, 15, 17, 19, 21];
 // 4 min window — must be less than cron interval (5 min) to prevent double-firing
 const ACCEPT_WINDOW_MS = 4 * 60 * 1000;
+// After last game ends: only re-fetch if odds haven't been updated in this window
+const POST_GAME_DEBOUNCE_MS = 25 * 60 * 1000; // 25 min — allows one fetch, skips the next 4 runs
 
 // WC name normalization (mirrors client)
 const WC_NAME_MAP = {
@@ -93,6 +96,18 @@ async function hasGamesToday(espnUrl) {
     if (!r.ok) return false;
     const d = await r.json();
     return (d.events || []).length > 0;
+  } catch { return false; }
+}
+
+// Returns true when all of today's games are finished — triggers next-day odds fetch
+async function allGamesFinal(espnUrl) {
+  try {
+    const r = await fetch(espnUrl);
+    if (!r.ok) return false;
+    const d = await r.json();
+    const events = d.events || [];
+    if (!events.length) return false;
+    return events.length > 0 && events.every(e => e.status?.type?.state === "post");
   } catch { return false; }
 }
 
@@ -213,15 +228,26 @@ export default async function handler(req, res) {
   const settle = await autoSettle();
   results._settle = settle.settled > 0 ? `✓ settled ${settle.settled} bet(s)` : "no bets to settle";
 
-  // 2. Update odds — only at fixed schedule times (max 12 API calls/day)
-  if (!shouldUpdateNow()) {
-    results._odds = `skip — next update at ${nextUpdateLabel()}`;
-    return res.json({ ok: true, timestamp, results });
-  }
+  // 2. Update odds — on fixed schedule OR when all today's games just ended (per sport)
+  const onSchedule = shouldUpdateNow();
 
   for (const [sportId, cfg] of Object.entries(SPORTS)) {
-    const hasGames = await hasGamesToday(cfg.espnUrl);
-    if (!hasGames) { results[sportId] = "skip — no games today"; continue; }
+    const gamesJustEnded = await allGamesFinal(cfg.espnUrl);
+
+    if (!onSchedule && !gamesJustEnded) {
+      results[sportId] = `skip — next at ${nextUpdateLabel()}`;
+      continue;
+    }
+
+    // Post-game debounce: after all games end, only fetch next-day odds once per 25 min
+    if (gamesJustEnded && !onSchedule) {
+      const cached = await sbGet(`odds_cache?id=eq.${sportId}&select=updated_at`);
+      const lastUpdate = cached?.[0]?.updated_at ? new Date(cached[0].updated_at).getTime() : 0;
+      if (Date.now() - lastUpdate < POST_GAME_DEBOUNCE_MS) {
+        results[sportId] = `skip — next-day odds already fetched ${Math.round((Date.now()-lastUpdate)/60000)}m ago`;
+        continue;
+      }
+    }
 
     try {
       const r = await fetch(
@@ -231,7 +257,9 @@ export default async function handler(req, res) {
       const data = await r.json();
       if (!Array.isArray(data)) { results[sportId] = "bad response"; continue; }
       const stored = await storeOdds(sportId, data);
-      results[sportId] = stored ? `✓ ${data.length} game(s)` : "supabase write failed";
+      results[sportId] = stored
+        ? `✓ ${data.length} game(s)${gamesJustEnded&&!onSchedule?" (post-game next-day fetch)":""}`
+        : "supabase write failed";
     } catch (e) {
       results[sportId] = `error: ${e.message}`;
     }
