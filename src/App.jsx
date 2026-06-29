@@ -1462,6 +1462,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
+                  {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
@@ -1646,6 +1647,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
+                  {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
