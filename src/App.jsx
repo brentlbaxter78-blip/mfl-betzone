@@ -238,6 +238,15 @@ const fetchESPN = async () => {
       }
     }
 
+    // If all today's games are final → automatically show tomorrow's games with betting open
+    if(evs.length>0 && evs.every(e=>e.status?.type?.state==="post")) {
+      const tomorrow=tomorrowStrET();
+      try {
+        const tmrRes=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=${tomorrow.replace(/-/g,"")}`);
+        if(tmrRes.ok){const tmrD=await tmrRes.json();const tmrEvs=(tmrD.events||[]).filter(e=>dateStrET(e.date)===tomorrow);if(tmrEvs.length>0)evs=tmrEvs;}
+      }catch{}
+    }
+
     if (!evs.length) return [];
     // Use 15-min cache if any game starts within 30 min, otherwise 60-min cache
     const soon = evs.some(e => isImminent(e.date));
@@ -377,6 +386,15 @@ const fetchMLB = async () => {
       if (ydEvs.length>0 && ydEvs.every(e=>e.status?.type?.state==="post")) evs=ydEvs;
     }
 
+    // If all today's games are final → automatically show tomorrow's games with betting open
+    if(evs.length>0 && evs.every(e=>e.status?.type?.state==="post")) {
+      const tomorrow=tomorrowStrET();
+      try {
+        const tmrRes=await fetch(`https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates=${tomorrow.replace(/-/g,"")}`);
+        if(tmrRes.ok){const tmrD=await tmrRes.json();const tmrEvs=(tmrD.events||[]).filter(e=>dateStrET(e.date)===tomorrow);if(tmrEvs.length>0)evs=tmrEvs;}
+      }catch{}
+    }
+
     if(!evs.length) return [];
     // Use 15-min cache if any game starts within 30 min, otherwise 60-min cache
     const soon = evs.some(e => isImminent(e.date));
@@ -480,24 +498,19 @@ const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
 const dateStrET = iso => new Date(iso).toLocaleDateString("en-CA",{timeZone:ET});
 const todayET = () => dateStrET(new Date().toISOString());
-// Before 8am ET: show previous day's completed games and keep betting locked
-const isEarlyMorningET = () => {
-  const h=parseInt(new Date().toLocaleString("en-US",{timeZone:ET,hour:"numeric",hour12:false})||"0");
-  return h>=0&&h<8;
-};
 const yesterdayStrET = () => new Date(Date.now()-86400000).toLocaleDateString("en-CA",{timeZone:ET});
+const tomorrowStrET  = () => new Date(Date.now()+86400000).toLocaleDateString("en-CA",{timeZone:ET});
 const mkHash = s => btoa(unescape(encodeURIComponent(s+"||mfl2026")));
 const unHash = h => { try{return decodeURIComponent(escape(atob(h))).replace("||mfl2026","");}catch{return "••••";} };
 const betLabel = t => t==="Draw"?"⚖️ Draw":t;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
 
-// Timing — defined after ET so bettingOpensAt/bettingClosesAt can use it
+// Timing
 const isClosed       = dt => new Date() >= new Date(new Date(dt).getTime()-180000);
 const isImminent     = dt => { const d=new Date(dt)-new Date(); return d>8*60*1000&&d<31*60*1000; };
-// Betting locks before 8am ET regardless of game time
-// At 8am odds update and betting opens for all games that day
-const isTooEarly     = (_dt) => isEarlyMorningET(); // reuses 8am ET check
-const bettingOpensAt = (_dt) => "8:00 AM ET";       // always opens at 8am
+// No overnight lock — betting opens as soon as games are displayed (after previous day ends)
+const isTooEarly     = (_dt) => false;
+const bettingOpensAt = (_dt) => null;
 const timeUntil      = dt => { const diff=new Date(dt)-new Date(); if(diff<=0)return null; const mins=Math.floor(diff/60000); if(mins<2)return"Starting now"; if(mins<60)return`Starts in ${mins}m`; const h=Math.floor(mins/60),m=mins%60; return`Starts in ${h}h${m>0?` ${m}m`:""}`; };
 const bettingClosesAt= dt => new Date(new Date(dt).getTime()-3*60000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"});
 
