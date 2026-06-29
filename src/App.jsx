@@ -1705,26 +1705,27 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {(()=>{
               const medals=["🥇","🥈","🥉"];
               const isTestOrAdmin=u=>u?.username===TEST_USER||u?.username===ADMIN_USER||u?.username==="__house__";
-              const lbName=u=>u?.display_name||u?.username||"Unknown";
-              const lbBets=allBets.filter(b=>{const u=users.find(u2=>u2.id===b.user_id);return!isTestOrAdmin(u);});
+              const findUser=uid=>users.find(u2=>u2.id===uid)||(uid===session.userId?user:null);
+              const lbName=uid=>{const u=findUser(uid);return u?.display_name||u?.username||"Player";};
+              const lbBets=allBets.filter(b=>{const u=findUser(b.user_id);return!isTestOrAdmin(u);});
               const lbData=[
                 {
                   icon:"💰",label:"Biggest Bet",sub:"most money on a single bet",
                   rows:[...lbBets].filter(b=>b.status!=="cancelled"&&b.stake>0)
                     .sort((a,b2)=>b2.stake-a.stake).slice(0,3)
-                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);return{name:lbName(u),val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""};}),
+                    .map(b=>({name:lbName(b.user_id),val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""})),
                 },
                 {
                   icon:"🏆",label:"Biggest Win",sub:"most money won on a single bet",
                   rows:[...lbBets].filter(b=>b.status==="won")
                     .sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).slice(0,3)
-                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{name:lbName(u),val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};}),
+                    .map(b=>{const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{name:lbName(b.user_id),val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};}),
                 },
                 {
                   icon:"🍀",label:"Luckiest Win",sub:"highest payout multiplier",
                   rows:[...lbBets].filter(b=>b.status==="won"&&b.stake>0)
                     .sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).slice(0,3)
-                    .map(b=>{const u=users.find(u2=>u2.id===b.user_id);const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{name:lbName(u),val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};}),
+                    .map(b=>{const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{name:lbName(b.user_id),val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};}),
                 },
                 {
                   icon:"🎯",label:"Most Bets",sub:"total bets placed",
@@ -1917,7 +1918,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             :pendTxs.map(tx=>{const u=users.find(x=>x.id===tx.user_id);return(
               <div key={tx.id} style={{...S.card,border:`1px solid ${C.gold}22`,marginBottom:10}}>
                 <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:4}}>{tx.type==="deposit"?"💵 Deposit":"💸 Withdrawal"}</div>
-                <div style={{fontSize:14,color:C.sub,marginBottom:8}}><strong style={{color:C.gold}}>{lbName(u)}</strong> · <strong style={{color:C.text}}>₿{tx.amount.toFixed(2)}</strong><span style={{color:C.dim,marginLeft:8}}>{fmtDate(tx.created_at)}</span></div>
+                <div style={{fontSize:14,color:C.sub,marginBottom:8}}><strong style={{color:C.gold}}>{u?.display_name||u?.username||"?"}</strong> · <strong style={{color:C.text}}>₿{tx.amount.toFixed(2)}</strong><span style={{color:C.dim,marginLeft:8}}>{fmtDate(tx.created_at)}</span></div>
                 <div style={{fontSize:12,color:C.sub,background:C.bg,borderRadius:8,padding:"8px 12px",marginBottom:12}}>
                   {tx.type==="deposit"?`⚠️ Confirm you received $${tx.amount.toFixed(2)} cash from ${u?.display_name}`:`⚠️ Hand $${tx.amount.toFixed(2)} cash to ${u?.display_name}`}
                 </div>
@@ -1932,7 +1933,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 <ST title="Recent History" style={{marginTop:20}}/>
                 {allTxs.filter(t=>t.status!=="pending"&&t.user_id!==house?.id).slice(0,15).map(tx=>{const u=users.find(x=>x.id===tx.user_id);return(
                   <div key={tx.id} style={{...S.card,display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <div><span style={{fontSize:13,fontWeight:700,color:C.text}}>{tx.type==="deposit"?"💵":"💸"} {lbName(u)}</span><div style={{fontSize:10,color:C.dim}}>{fmtDate(tx.created_at)}</div></div>
+                    <div><span style={{fontSize:13,fontWeight:700,color:C.text}}>{tx.type==="deposit"?"💵":"💸"} {u?.display_name||u?.username||"?"}</span><div style={{fontSize:10,color:C.dim}}>{fmtDate(tx.created_at)}</div></div>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:13,fontWeight:800,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span><SPill s={tx.status}/></div>
                   </div>
                 );})}
