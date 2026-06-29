@@ -2190,7 +2190,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 </>
               }
             </div>
-            </div>
 
             {/* Settle pending bets */}
             <ST title="Settle Bets" sub={`${pendBets.length} pending bets — mark won or lost after each game`}/>
