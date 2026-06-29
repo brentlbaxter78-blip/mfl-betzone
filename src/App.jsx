@@ -35,6 +35,8 @@ const db = {
   pendingTxs: ()   => sb(`transactions?status=eq.pending&order=created_at.asc`),
   addTx:      d    => sb(`transactions`, { method:"POST", body:JSON.stringify(d) }),
   patchTx:    (id,d) => sb(`transactions?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
+  getMonthlyPrize: ()=>sb(`odds_cache?id=eq.monthly_prize&select=data`),
+  setMonthlyPrize: d=>sb(`odds_cache?id=eq.monthly_prize`,{method:"PATCH",body:JSON.stringify({data:d}),prefer:"return=minimal"}),
 };
 
 // ─── STABLE ODDS (module-level cache, resets every 2 min to match refresh) ───
@@ -226,8 +228,8 @@ const fetchESPN = async () => {
     const today = todayET();
     let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
 
-    // Before 3am ET: show previous day's completed games so users can see last night's results
-    if (evs.length===0 && isEarlyMorningET()) {
+    // If today has no games yet, show yesterday's completed results while waiting
+    if (evs.length===0) {
       const yd = yesterdayStrET();
       evs = (d.events||[]).filter(e => dateStrET(e.date) === yd);
       if (evs.length===0) {
@@ -288,17 +290,16 @@ const fetchESPN = async () => {
       let o1 = bookOdds?.o1 ?? (eO1||null) ?? fb.o1;
       let o2 = bookOdds?.o2 ?? (eO2||null) ?? fb.o2;
       // Knockout stage: no Draw — winner is whoever advances (incl. ET & pens)
-      let oDraw = isKnockout ? null : (bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw);
+      let oDraw = bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw;
       const book = bookOdds?.book || (eO1?"ESPN BET":null);
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
       // Use FanDuel/book odds directly — no extra vig added on top
-      // For live/final games: always lock to pre-game saved odds — never recalculate
-      // (Odds API drops the game once it starts, causing garbage fallback values)
+      // Knockout games still show Draw — it pays out on 90-min regulation result
+      // (same as FanDuel's h2h market — ET/pens don't count for this bet)
       if(isLive || isFinal || isPostponed){
         const sv=loadOdds(e.id);
-        if(sv){o1=sv.o1;o2=sv.o2;if(!isKnockout)oDraw=sv.oDraw||oDraw;}
-        // Don't save or update odds for in-progress/finished games
+        if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;}
       } else {
         if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
@@ -723,6 +724,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [settleScores,setSettleScores]=useState({});
   const [lbOpen,setLbOpen]=useState(false);
   const [lbTab,setLbTab]=useState(0);
+  const [lbMainTab,setLbMainTab]=useState(0); // 0=Monthly Race, 1=All Time
+  const [monthlyPrize,setMonthlyPrize]=useState(null);
+  const [prizeInput,setPrizeInput]=useState('');
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [delConfirmText,setDelConfirmText]=useState("");
@@ -764,6 +768,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         setAllBets(ab||[]);
       }
     }catch(e){showToast("Error loading","error");}finally{setLoading(false);}
+    // Load monthly prize for all users (admin and player)
+    try{const pr=await db.getMonthlyPrize();if(pr?.[0]?.data)setMonthlyPrize(pr[0].data);}catch{}
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
@@ -968,6 +974,36 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
+  };
+  const savePrize=async()=>{
+    const a=parseFloat(prizeInput);
+    if(!a||a<=0)return showToast("Enter a prize amount","error");
+    try{
+      await db.setMonthlyPrize({prize:a,paid:false,revealed:false});
+      setMonthlyPrize({prize:a,paid:false,revealed:false});
+      setPrizeInput("");showToast(`Monthly prize set to ₿${a} ✓`);
+    }catch(e){showToast("Error saving prize","error");}
+  };
+  const revealPrize=async()=>{
+    const updated={...monthlyPrize,revealed:true};
+    try{await db.setMonthlyPrize(updated);setMonthlyPrize(updated);showToast("Prize revealed to players ✓");}
+    catch(e){showToast("Error","error");}
+  };
+  const payoutMonthlyPrize=async(winnerId,winnerName)=>{
+    const prize=monthlyPrize?.prize;
+    if(!prize)return showToast("No prize set","error");
+    try{
+      const [freshWinner,freshHouse]=await Promise.all([db.getUser(winnerId),db.getHouse()]);
+      const fw=freshWinner?.[0],fh=freshHouse?.[0];
+      if(!fw||!fh)return showToast("Error finding accounts","error");
+      if(fh.balance<prize)return showToast("Not enough in house pot","error");
+      await db.patchUser(fw.id,{balance:+(fw.balance+prize).toFixed(2)});
+      await db.patchUser(fh.id,{balance:+(fh.balance-prize).toFixed(2)});
+      await db.addTx({user_id:fw.id,type:"deposit",amount:prize,status:"approved",note:`🏆 Monthly Race prize — ${new Date().toLocaleString("en-US",{month:"long"})} winner`});
+      const updated={...monthlyPrize,paid:true,paidTo:winnerName};
+      await db.setMonthlyPrize(updated);setMonthlyPrize(updated);
+      showToast(`₿${prize} paid to ${winnerName} 🏆`);await load();
+    }catch(e){showToast("Error paying out prize","error");}
   };
   const forceRefreshOdds=async()=>{
     try{
@@ -1426,8 +1462,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
-                  {/* PRE-GAME ODDS disclaimer — shown when bets are closed OR game is live */}
-                  {(isLive||(closed&&!isFinal&&!isPostponed))&&<div style={{fontSize:11,fontWeight:700,color:"#FF9800",textAlign:"center",marginTop:8,padding:"6px 12px",background:"#1A0E00",borderRadius:8,border:"1px solid #FF980033"}}>⚠️ PRE-GAME ODDS — NOT LIVE · Lines locked at betting close</div>}
+
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
                       {myGameBets.length>0&&<div style={{fontSize:11,color:"#FF9800",marginBottom:8}}>⚠️ You already have a bet on this game — this adds a second separate bet</div>}
@@ -1450,8 +1485,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   )}
                   {/* Closing time warning */}
                   {!early&&!closed&&!isLive&&!isFinal&&!isPostponed&&(
-                    <div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>
-                      Betting closes at <strong style={{color:"#E53935"}}>{bettingClosesAt(g.dt)}</strong>
+                    <div style={{textAlign:"center",marginTop:8}}>
+                      <div style={{fontSize:10,color:C.dim}}>Betting closes at <strong style={{color:"#E53935"}}>{bettingClosesAt(g.dt)}</strong></div>
+                      {g.isKnockout&&<div style={{fontSize:10,color:C.dim,marginTop:2}}>⏱ 90-min result · Draw pays if tied at full time</div>}
                     </div>
                   )}
                   </>)}
@@ -1610,8 +1646,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </button>
                   </div>
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
-                  {/* PRE-GAME ODDS disclaimer */}
-                  {(isLive||(closed&&!isFinal&&!isPostponed))&&<div style={{fontSize:11,fontWeight:700,color:"#FF9800",textAlign:"center",marginTop:8,padding:"6px 12px",background:"#1A0E00",borderRadius:8,border:"1px solid #FF980033"}}>⚠️ PRE-GAME ODDS — NOT LIVE · Lines locked at betting close</div>}
+
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
                       {myGameBets.length>0&&<div style={{fontSize:11,color:"#FF9800",marginBottom:8}}>⚠️ You already have a bet on this game — this adds a second separate bet</div>}
@@ -1714,108 +1749,195 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 {user.privacy_public?"🟢 Public":"🔴 Private"}
               </button>
             </div>
-            {/* Leaderboard */}
+            {/* Leaderboard — Monthly Race + All Time */}
             {(()=>{
               const medals=["🥇","🥈","🥉"];
               const isTestOrAdmin=u=>u?.username===TEST_USER||u?.username===ADMIN_USER||u?.username==="__house__";
               const findUser=uid=>users.find(u2=>u2.id===uid)||(uid===session.userId?user:null);
               const lbName=uid=>{const u=findUser(uid);return u?.display_name||u?.username||"Player";};
-              const lbBets=allBets.filter(b=>{const u=findUser(b.user_id);return!isTestOrAdmin(u);});
-              const lbData=[
-                {
-                  icon:"💰",label:"Biggest Bet",sub:"most money on a single bet",
-                  rows:[...lbBets].filter(b=>b.status!=="cancelled"&&b.stake>0)
-                    .sort((a,b2)=>b2.stake-a.stake).slice(0,3)
-                    .map(b=>({name:lbName(b.user_id),val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""})),
-                },
-                {
-                  icon:"🏆",label:"Biggest Win",sub:"most money won on a single bet",
-                  rows:[...lbBets].filter(b=>b.status==="won")
-                    .sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).slice(0,3)
-                    .map(b=>{const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{name:lbName(b.user_id),val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};}),
-                },
-                {
-                  icon:"🍀",label:"Luckiest Win",sub:"highest payout multiplier",
-                  rows:[...lbBets].filter(b=>b.status==="won"&&b.stake>0)
-                    .sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).slice(0,3)
-                    .map(b=>{const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{name:lbName(b.user_id),val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};}),
-                },
-                {
-                  icon:"🎯",label:"Most Bets",sub:"total bets placed",
-                  rows:Object.entries(
-                    allBets.filter(b=>b.status!=="cancelled").reduce((acc,b)=>{
-                      const u=findUser(b.user_id);
-                      if(isTestOrAdmin(u)) return acc;
-                      acc[b.user_id]=(acc[b.user_id]||0)+1;
-                      return acc;
-                    },{})
-                  ).map(([uid,cnt])=>({name:lbName(uid),val:`${cnt} bet${cnt!==1?"s":""}`,cnt}))
-                  .sort((a,b2)=>b2.cnt-a.cnt).slice(0,3),
-                },
+
+              // Filter helper: excludes test/admin/house bets
+              const filterLb=bets=>bets.filter(b=>{const u=findUser(b.user_id);return!isTestOrAdmin(u);});
+
+              // Monthly filter — current month only
+              const now=new Date();
+              const mStart=new Date(now.getFullYear(),now.getMonth(),1);
+              const mEnd=new Date(now.getFullYear(),now.getMonth()+1,0,23,59,59,999);
+              const monthlyBets=filterLb(allBets.filter(b=>b.status!=="cancelled"&&new Date(b.placed_at)>=mStart&&new Date(b.placed_at)<=mEnd));
+              const allTimeBets=filterLb(allBets);
+
+              // Build leaderboard data for any bet set
+              const buildLb=bets=>[
+                {icon:"💰",label:"Biggest Bet",sub:"most on a single bet",
+                  rows:[...bets].filter(b=>b.stake>0).sort((a,b2)=>b2.stake-a.stake).slice(0,3)
+                    .map(b=>({uid:b.user_id,name:lbName(b.user_id),val:`₿${b.stake.toFixed(2)}`,sub:b.legs?.[0]?.fighter||""}))},
+                {icon:"🏆",label:"Biggest Win",sub:"most won on a single bet",
+                  rows:[...bets].filter(b=>b.status==="won").sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).slice(0,3)
+                    .map(b=>{const p=+(b.stake+(b.potential_win||0)).toFixed(2);return{uid:b.user_id,name:lbName(b.user_id),val:`₿${p.toFixed(2)}`,sub:`₿${b.stake} bet`};})},
+                {icon:"🍀",label:"Luckiest Win",sub:"highest payout multiplier",
+                  rows:[...bets].filter(b=>b.status==="won"&&b.stake>0).sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).slice(0,3)
+                    .map(b=>{const mult=((b.stake+(b.potential_win||0))/b.stake).toFixed(2);return{uid:b.user_id,name:lbName(b.user_id),val:`${mult}x`,sub:`₿${b.stake} → ₿${(b.stake+(b.potential_win||0)).toFixed(2)}`};})},
+                {icon:"🎯",label:"Most Bets",sub:"total bets placed",
+                  rows:Object.entries(bets.filter(b=>b.status!=="cancelled").reduce((acc,b)=>{const u=findUser(b.user_id);if(isTestOrAdmin(u))return acc;acc[b.user_id]=(acc[b.user_id]||0)+1;return acc;},{}))
+                    .map(([uid,cnt])=>({uid,name:lbName(uid),val:`${cnt} bet${cnt!==1?"s":""}`,cnt})).sort((a,b2)=>b2.cnt-a.cnt).slice(0,3)},
               ];
-              const cur=lbData[lbTab];
+
+              const monthlyLb=buildLb(monthlyBets);
+              const allTimeLb=buildLb(allTimeBets);
+              const curLb=lbMainTab===0?monthlyLb:allTimeLb;
+              const cur=curLb[lbTab];
+
+              // Monthly points: 1st=3pts 2nd=2pts 3rd=1pt per category
+              const mPts={};
+              monthlyLb.forEach(cat=>cat.rows.forEach((row,i)=>{if(row.uid)mPts[row.uid]=(mPts[row.uid]||0)+[3,2,1][i];}));
+              const standings=Object.entries(mPts).map(([uid,pts])=>({uid,name:lbName(uid),pts})).sort((a,b)=>b.pts-a.pts);
+
+              // Countdown to end of month
+              const mEndMs=mEnd.getTime()-now.getTime();
+              const days=Math.floor(mEndMs/86400000);
+              const hrs=Math.floor((mEndMs%86400000)/3600000);
+              const mins2=Math.floor((mEndMs%3600000)/60000);
+              const countdown=mEndMs<=0?"Month ended!":days>0?`${days}d ${hrs}h ${mins2}m`:`${hrs}h ${mins2}m`;
+
+              // Prize display
+              const isLastDay=now.getDate()===new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+              const prize=monthlyPrize?.prize;
+              const prizeVisible=isLastDay||monthlyPrize?.revealed||monthlyPrize?.paid;
+              const prizeText=prize&&prizeVisible?`₿${prize}`:"🎁 TBD — revealed at month end";
+
               return(
                 <div style={{...S.card,marginBottom:10}}>
+                  {/* Header toggle */}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setLbOpen(o=>!o)}>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span style={{fontSize:18}}>🏅</span>
-                      <div><div style={{fontSize:14,fontWeight:800,color:C.gold}}>Leaderboards</div><div style={{fontSize:11,color:C.dim,marginTop:1}}>Top 3 in 4 categories</div></div>
+                      <div><div style={{fontSize:14,fontWeight:800,color:C.gold}}>Leaderboards</div>
+                      <div style={{fontSize:11,color:C.dim,marginTop:1}}>Monthly Race · All Time</div></div>
                     </div>
                     <span style={{color:C.dim,fontSize:13}}>{lbOpen?"▲":"▼"}</span>
                   </div>
-                  {lbOpen&&(
-                    <div style={{marginTop:14}}>
-                      {/* Tab selector */}
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6,marginBottom:14}}>
-                        {lbData.map((lb,i)=>(
-                          <button key={i} onClick={()=>setLbTab(i)} style={{background:lbTab===i?C.gold:C.bg,color:lbTab===i?C.bg:C.dim,border:`1px solid ${lbTab===i?C.gold:C.border}`,borderRadius:10,padding:"8px 4px",fontSize:10,fontWeight:700,cursor:"pointer",textAlign:"center",lineHeight:1.3}}>
-                            <div style={{fontSize:16,marginBottom:2}}>{lb.icon}</div>{lb.label}
-                          </button>
-                        ))}
-                      </div>
-                      {/* Leaderboard title */}
-                      <div style={{textAlign:"center",marginBottom:12}}>
-                        <div style={{fontSize:13,fontWeight:700,color:C.text}}>{cur.icon} {cur.label}</div>
-                        <div style={{fontSize:11,color:C.dim,marginTop:2}}>{cur.sub}</div>
-                      </div>
-                      {/* Top 3 */}
-                      {cur.rows.length===0
-                        ?<div style={{textAlign:"center",color:C.dim,fontSize:12,padding:"16px 0"}}>No data yet — place some bets!</div>
-                        :cur.rows.map((row,i)=>(
-                          <div key={i} style={{display:"flex",alignItems:"center",gap:12,background:i===0?"#1A1400":C.bg,border:`1px solid ${i===0?C.gold+"44":C.border}`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
-                            <span style={{fontSize:22,flexShrink:0}}>{medals[i]}</span>
-                            <div style={{flex:1,minWidth:0}}>
-                              <div style={{fontSize:14,fontWeight:800,color:i===0?C.gold:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.name}</div>
-                              {row.sub&&<div style={{fontSize:11,color:C.dim,marginTop:1}}>{row.sub}</div>}
-                            </div>
-                            <div style={{fontSize:16,fontWeight:900,color:i===0?C.gold:C.text,flexShrink:0}}>{row.val}</div>
-                          </div>
-                        ))
-                      }
-                      {/* Show current user's rank if not in top 3 */}
-                      {(()=>{
-                        const myName=lbName(users.find(u=>u.id===session.userId));
-                        const inTop3=cur.rows.some(r=>r.name===myName);
-                        if(inTop3||cur.rows.length===0) return null;
-                        // Find my full rank
-                        const allRows=(()=>{
-                          if(lbTab===0) return [...lbBets].filter(b=>b.status!=="cancelled"&&b.stake>0).sort((a,b2)=>b2.stake-a.stake).map(b=>({uid:b.user_id,val:b.stake}));
-                          if(lbTab===1) return [...lbBets].filter(b=>b.status==="won").sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).map(b=>({uid:b.user_id,val:b.stake+(b.potential_win||0)}));
-                          if(lbTab===2) return [...lbBets].filter(b=>b.status==="won"&&b.stake>0).sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).map(b=>({uid:b.user_id,val:(b.stake+(b.potential_win||0))/b.stake}));
-                          return [...users].filter(u=>!isTestOrAdmin(u)).sort((a,b2)=>allBets.filter(b=>b.user_id===b2.id).length-allBets.filter(b=>b.user_id===a.id).length).map(u=>({uid:u.id,val:0}));
-                        })();
-                        const myRank=allRows.findIndex(r=>r.uid===session.userId)+1;
-                        if(myRank===0) return null;
-                        return(
-                          <div style={{marginTop:4,padding:"10px 14px",borderRadius:12,border:`1px solid ${C.gold}44`,background:"#0D1A0D",display:"flex",alignItems:"center",gap:12}}>
-                            <span style={{fontSize:16,color:C.dim,flexShrink:0}}>#{myRank}</span>
-                            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:C.green}}>You</div></div>
-                            <div style={{fontSize:11,color:C.dim}}>outside top 3</div>
-                          </div>
-                        );
-                      })()}
+
+                  {lbOpen&&<div style={{marginTop:14}}>
+                    {/* Main tab: Monthly Race / All Time */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:14}}>
+                      {[{icon:"🏁",label:"Monthly Race"},{icon:"⏳",label:"All Time"}].map((t,i)=>(
+                        <button key={i} onClick={()=>setLbMainTab(i)}
+                          style={{background:lbMainTab===i?C.gold:C.bg,color:lbMainTab===i?C.bg:C.dim,
+                            border:`1px solid ${lbMainTab===i?C.gold:C.border}`,borderRadius:10,
+                            padding:"10px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                          {t.icon} {t.label}
+                        </button>
+                      ))}
                     </div>
-                  )}
+
+                    {/* Monthly Race header */}
+                    {lbMainTab===0&&(
+                      <>
+                        <div style={{background:"#0D1A0D",border:`1px solid ${C.green}33`,borderRadius:12,padding:"12px 14px",marginBottom:10}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div>
+                              <div style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.08em"}}>MONTHLY PRIZE</div>
+                              <div style={{fontSize:18,fontWeight:900,color:C.gold,marginTop:2}}>{prizeText}</div>
+                            </div>
+                            <div style={{textAlign:"right"}}>
+                              <div style={{fontSize:11,color:C.dim}}>Race ends in</div>
+                              <div style={{fontSize:16,fontWeight:800,color:C.gold,marginTop:2}}>{countdown}</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{background:C.bg,borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:11,color:C.dim,lineHeight:1.7}}>
+                          <strong style={{color:C.text}}>🏁 How the race works: </strong>
+                          Top 3 in each of 4 bet categories earn points — 🥇 3pts · 🥈 2pts · 🥉 1pt. Max 12 points per month. Most points at month end wins the prize. Resets on the 1st. Tiebreaker: most bets placed.
+                        </div>
+                        {/* Overall standings */}
+                        {standings.length>0&&(
+                          <div style={{marginBottom:14}}>
+                            <div style={{fontSize:10,fontWeight:700,color:C.dim,letterSpacing:"0.08em",marginBottom:8}}>📊 CURRENT STANDINGS</div>
+                            {standings.slice(0,3).map((s,i)=>(
+                              <div key={s.uid} style={{display:"flex",alignItems:"center",gap:10,
+                                background:i===0?"#1A1400":C.bg,border:`1px solid ${i===0?C.gold+"44":C.border}`,
+                                borderRadius:10,padding:"9px 12px",marginBottom:6}}>
+                                <span style={{fontSize:18}}>{medals[i]}</span>
+                                <div style={{flex:1}}>
+                                  <span style={{fontSize:13,fontWeight:700,color:i===0?C.gold:C.text}}>{s.name}</span>
+                                  {s.uid===session.userId&&<span style={{fontSize:10,color:C.green,marginLeft:6}}>You</span>}
+                                </div>
+                                <div style={{fontSize:15,fontWeight:900,color:i===0?C.gold:C.text}}>{s.pts}pts</div>
+                              </div>
+                            ))}
+                            {(()=>{const myIdx=standings.findIndex(s=>s.uid===session.userId);const me=standings[myIdx];if(!me||myIdx<3)return null;return(
+                              <div style={{padding:"8px 12px",borderRadius:10,border:`1px solid ${C.gold}33`,background:"#0D1400",display:"flex",alignItems:"center",gap:10,marginTop:4}}>
+                                <span style={{color:C.dim,fontSize:13}}>#{myIdx+1}</span>
+                                <div style={{flex:1,fontSize:12,fontWeight:700,color:C.green}}>You — {me.pts}pts</div>
+                                <div style={{fontSize:11,color:C.dim}}>outside top 3</div>
+                              </div>
+                            );})()}
+                          </div>
+                        )}
+                        {standings.length===0&&<div style={{textAlign:"center",color:C.dim,fontSize:12,padding:"8px 0",marginBottom:12}}>No bets placed this month yet — be the first!</div>}
+                      </>
+                    )}
+
+                    {/* Category tabs */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6,marginBottom:12}}>
+                      {curLb.map((lb,i)=>(
+                        <button key={i} onClick={()=>setLbTab(i)}
+                          style={{background:lbTab===i?C.gold:C.bg,color:lbTab===i?C.bg:C.dim,
+                            border:`1px solid ${lbTab===i?C.gold:C.border}`,borderRadius:10,
+                            padding:"8px 4px",fontSize:10,fontWeight:700,cursor:"pointer",textAlign:"center",lineHeight:1.3}}>
+                          <div style={{fontSize:16,marginBottom:2}}>{lb.icon}</div>{lb.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{textAlign:"center",marginBottom:12}}>
+                      <div style={{fontSize:13,fontWeight:700,color:C.text}}>{cur.icon} {cur.label}</div>
+                      <div style={{fontSize:11,color:C.dim,marginTop:2}}>{cur.sub}</div>
+                      {lbMainTab===0&&<div style={{fontSize:10,color:C.gold,marginTop:2}}>This month only · points shown next to name</div>}
+                    </div>
+
+                    {/* Top 3 rows */}
+                    {cur.rows.length===0
+                      ?<div style={{textAlign:"center",color:C.dim,fontSize:12,padding:"16px 0"}}>
+                        {lbMainTab===0?"No bets this month yet!":"No data yet — place some bets!"}
+                      </div>
+                      :cur.rows.map((row,i)=>(
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:12,
+                          background:i===0?"#1A1400":C.bg,
+                          border:`1px solid ${i===0?C.gold+"44":C.border}`,
+                          borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+                          <span style={{fontSize:22,flexShrink:0}}>{medals[i]}</span>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:14,fontWeight:800,color:i===0?C.gold:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.name}</div>
+                            {row.sub&&<div style={{fontSize:11,color:C.dim,marginTop:1}}>{row.sub}</div>}
+                            {lbMainTab===0&&row.uid&&mPts[row.uid]&&
+                              <div style={{fontSize:9,color:C.gold,marginTop:2}}>{mPts[row.uid]}pts this month</div>}
+                          </div>
+                          <div style={{fontSize:16,fontWeight:900,color:i===0?C.gold:C.text,flexShrink:0}}>{row.val}</div>
+                        </div>
+                      ))
+                    }
+                    {/* Show my rank if outside top 3 */}
+                    {(()=>{
+                      if(cur.rows.length===0) return null;
+                      const inTop3=cur.rows.some(r=>r.uid===session.userId);
+                      if(inTop3) return null;
+                      const allRows=(()=>{
+                        if(lbTab===0) return [...(lbMainTab===0?monthlyBets:allTimeBets)].filter(b=>b.stake>0).sort((a,b2)=>b2.stake-a.stake).map(b=>({uid:b.user_id}));
+                        if(lbTab===1) return [...(lbMainTab===0?monthlyBets:allTimeBets)].filter(b=>b.status==="won").sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))).map(b=>({uid:b.user_id}));
+                        if(lbTab===2) return [...(lbMainTab===0?monthlyBets:allTimeBets)].filter(b=>b.status==="won"&&b.stake>0).sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake)).map(b=>({uid:b.user_id}));
+                        return Object.entries((lbMainTab===0?monthlyBets:allTimeBets).filter(b=>b.status!=="cancelled").reduce((acc,b)=>{acc[b.user_id]=(acc[b.user_id]||0)+1;return acc;},{})).sort((a,b2)=>b2[1]-a[1]).map(([uid])=>({uid}));
+                      })();
+                      const myRank=allRows.findIndex(r=>r.uid===session.userId)+1;
+                      if(!myRank) return null;
+                      return(
+                        <div style={{marginTop:4,padding:"10px 14px",borderRadius:12,border:`1px solid ${C.gold}44`,background:"#0D1A0D",display:"flex",alignItems:"center",gap:12}}>
+                          <span style={{fontSize:16,color:C.dim,flexShrink:0}}>#{myRank}</span>
+                          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:C.green}}>You</div></div>
+                          <div style={{fontSize:11,color:C.dim}}>outside top 3</div>
+                        </div>
+                      );
+                    })()}
+                  </div>}
                 </div>
               );
             })()}
@@ -2006,6 +2128,68 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 <div style={{fontSize:11,color:C.dim,marginBottom:8}}>If odds changed significantly right before a game (injury, lineup news) — use sparingly, burns 1-2 API credits from your monthly buffer.</div>
                 <button style={{...S.ghost,width:"100%",padding:"11px",fontSize:13}} onClick={forceRefreshOdds}>🔄 Force Refresh Odds Now</button>
               </div>
+            </div>
+            {/* Monthly Race Prize Management */}
+            <div style={{...S.card,marginBottom:14,border:`1px solid ${C.green}33`}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:"0.08em",marginBottom:10}}>🏁 MONTHLY RACE PRIZE</div>
+              {monthlyPrize?.paid
+                ?<div style={{background:"#0D1A0D",borderRadius:10,padding:"12px",textAlign:"center"}}>
+                  <div style={{fontSize:20}}>🏆</div>
+                  <div style={{fontSize:13,fontWeight:700,color:C.green,marginTop:4}}>Prize paid out to {monthlyPrize.paidTo}</div>
+                  <div style={{fontSize:11,color:C.dim,marginTop:2}}>₿{monthlyPrize.prize} — {new Date().toLocaleString("en-US",{month:"long"})} race complete</div>
+                </div>
+                :<>
+                  <div style={{fontSize:11,color:C.dim,marginBottom:10,lineHeight:1.6}}>Set the monthly prize. Players won't see the amount until the last day of the month (or you reveal it early). When the month ends, pay out the overall points leader.</div>
+                  <div style={{display:"flex",gap:8,marginBottom:10}}>
+                    <div style={{...S.stakeW,flex:1}}>
+                      <span style={{fontSize:14,fontWeight:700,color:C.green,marginRight:5}}>₿</span>
+                      <input style={S.stakeInp} type="number" placeholder={monthlyPrize?.prize?`Current: ₿${monthlyPrize.prize}`:"Prize amount"} value={prizeInput} onChange={e=>setPrizeInput(e.target.value)} min="1" step="1"/>
+                    </div>
+                    <button style={{...S.btn,padding:"0 14px",background:C.green,whiteSpace:"nowrap"}} onClick={savePrize}>💾 Set</button>
+                  </div>
+                  {monthlyPrize?.prize&&(
+                    <div style={{background:C.bg,borderRadius:10,padding:"12px",marginBottom:10}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                        <div>
+                          <div style={{fontSize:11,color:C.dim}}>Current prize</div>
+                          <div style={{fontSize:18,fontWeight:900,color:C.gold}}>₿{monthlyPrize.prize}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:11,color:C.dim}}>Visibility</div>
+                          <div style={{fontSize:12,fontWeight:700,color:monthlyPrize.revealed?C.green:C.dim,marginTop:2}}>{monthlyPrize.revealed?"👁 Revealed":"🔒 Hidden"}</div>
+                        </div>
+                      </div>
+                      {!monthlyPrize.revealed&&<button style={{...S.ghost,width:"100%",padding:"9px",fontSize:12,marginBottom:8}} onClick={revealPrize}>👁 Reveal Prize to Players Now</button>}
+                      {(()=>{
+                        // Compute monthly winner inline
+                        const isTA=u=>u?.username===TEST_USER||u?.username===ADMIN_USER||u?.username==="__house__";
+                        const fU=uid=>users.find(u2=>u2.id===uid);
+                        const now2=new Date();
+                        const ms=new Date(now2.getFullYear(),now2.getMonth(),1);
+                        const me2=new Date(now2.getFullYear(),now2.getMonth()+1,0,23,59,59,999);
+                        const mb=allBets.filter(b=>b.status!=="cancelled"&&new Date(b.placed_at)>=ms&&new Date(b.placed_at)<=me2&&!isTA(fU(b.user_id)));
+                        const pts2={};
+                        [[...mb].filter(b=>b.stake>0).sort((a,b2)=>b2.stake-a.stake),[...mb].filter(b=>b.status==="won").sort((a,b2)=>(b2.stake+(b2.potential_win||0))-(a.stake+(a.potential_win||0))),[...mb].filter(b=>b.status==="won"&&b.stake>0).sort((a,b2)=>((b2.stake+(b2.potential_win||0))/b2.stake)-((a.stake+(a.potential_win||0))/a.stake))].forEach(arr=>arr.slice(0,3).forEach((b,i)=>{pts2[b.user_id]=(pts2[b.user_id]||0)+[3,2,1][i];}));
+                        const mbCnts=mb.reduce((acc,b)=>{acc[b.user_id]=(acc[b.user_id]||0)+1;return acc;},{});
+                        Object.entries(mbCnts).forEach(([uid,cnt])=>{const arr=Object.entries(mbCnts).sort((a,b2)=>b2[1]-a[1]);arr.slice(0,3).forEach(([u2,],i)=>{if(u2===uid)pts2[uid]=(pts2[uid]||0)+[3,2,1][i];});});
+                        const winner=Object.entries(pts2).sort((a,b2)=>b2[1]-a[1])[0];
+                        if(!winner)return<div style={{fontSize:12,color:C.dim}}>No monthly bets yet</div>;
+                        const wUser=fU(winner[0]);
+                        const wName=wUser?.display_name||wUser?.username||"Unknown";
+                        return(
+                          <div>
+                            <div style={{fontSize:11,color:C.dim,marginBottom:6}}>Current monthly leader: <strong style={{color:C.gold}}>{wName}</strong> — {winner[1]}pts</div>
+                            <button style={{...S.btn,width:"100%",padding:"12px",background:"#00C853"}} onClick={()=>payoutMonthlyPrize(winner[0],wName)}>
+                              🏆 Pay Out ₿{monthlyPrize.prize} to {wName}
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </>
+              }
+            </div>
             </div>
 
             {/* Settle pending bets */}
