@@ -754,10 +754,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
-  // Periodic bet/balance refresh so auto-settled bets appear without manual reload
+  // Periodic bet/balance refresh — 30s keeps leaderboard and balances live
   // Also fires on tab focus so users coming back from another app see fresh data immediately
   useEffect(()=>{
-    const iv=setInterval(()=>{if(!document.hidden)load();},2*60*1000);
+    const iv=setInterval(()=>{if(!document.hidden)load();},30*1000);
     const h=()=>{if(!document.hidden)load();};
     document.addEventListener("visibilitychange",h);
     return()=>{clearInterval(iv);document.removeEventListener("visibilitychange",h);};
