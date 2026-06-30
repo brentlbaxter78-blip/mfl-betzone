@@ -1408,6 +1408,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {p.items.map((item,i)=>(
                     <div key={i} style={{fontSize:12,color:C.sub,marginBottom:7,lineHeight:1.5}}>{item}</div>
                   ))}
+                  <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`,fontSize:11,color:C.dim,fontStyle:"italic",lineHeight:1.6}}>
+                    -Brent<br/>Good luck fellas, have fun, and most importantly gamble responsibly. ENJOY!
+                  </div>
                 </div>
               ))}
             </div>
@@ -1990,6 +1993,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {p.items.map((item,i)=>(
                         <div key={i} style={{fontSize:12,color:C.sub,marginBottom:7,lineHeight:1.5}}>{item}</div>
                       ))}
+                      <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`,fontSize:11,color:C.dim,fontStyle:"italic",lineHeight:1.6}}>
+                        -Brent<br/>Good luck fellas, have fun, and most importantly gamble responsibly. ENJOY!
+                      </div>
                     </div>
                   ))}
                 </div>
