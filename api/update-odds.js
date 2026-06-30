@@ -128,31 +128,47 @@ async function fetchFinalResults(sport) {
     const d = await r.json();
     const results = {};
     for (const e of (d.events || [])) {
-      if (e.status?.type?.state !== "post") continue;
       const cs = e.competitions?.[0]?.competitors || [];
       const h = cs.find(c => c.homeAway === "home");
       const a = cs.find(c => c.homeAway === "away");
       if (!h || !a) continue;
-      const hn = sport === "soccer" ? normName(h.team?.displayName || "") : (h.team?.displayName || "");
-      const an = sport === "soccer" ? normName(a.team?.displayName || "") : (a.team?.displayName || "");
+      const state = e.status?.type?.state;
 
-      // For soccer: use 90-minute regulation score (periods 1+2 only)
-      // This is the "h2h" market result — ET and penalty goals don't count
-      const regScore = (comp) => {
-        const ls = comp.linescores || [];
-        if (!ls.length) return parseInt(comp.score || 0, 10);
-        // Sum only first 2 periods (1st half + 2nd half = 90 min)
-        return ls.slice(0, 2).reduce((s, p) => s + parseInt(p.value ?? p.displayValue ?? 0, 10), 0);
-      };
-      const homeScore = sport === "soccer" ? regScore(h) : parseInt(h.score || 0, 10);
-      const awayScore = sport === "soccer" ? regScore(a) : parseInt(a.score || 0, 10);
+      if (sport === "soccer") {
+        // Settle as soon as 90-min regulation (incl. stoppage time) is complete —
+        // don't wait for extra time / penalties to finish in knockout games.
+        // ESPN only populates a half's linescore entry once that half has fully ended,
+        // including stoppage time, so 2 entries = regulation is locked in.
+        const hLs = h.linescores || [];
+        const aLs = a.linescores || [];
+        const regulationDone = (hLs.length >= 2 && aLs.length >= 2) || state === "post";
+        if (!regulationDone) continue;
 
-      results[e.id] = {
-        t1: hn, t2: an,
-        home: homeScore,
-        away: awayScore,
-        scoreStr: `${hn} ${homeScore} - ${awayScore} ${an}${sport==="soccer"?" (90 min)":""}`,
-      };
+        const hn = normName(h.team?.displayName || "");
+        const an = normName(a.team?.displayName || "");
+        const regScore = (ls, fallback) => ls.length >= 2
+          ? ls.slice(0, 2).reduce((s, p) => s + parseInt(p.value ?? p.displayValue ?? 0, 10), 0)
+          : parseInt(fallback || 0, 10);
+        const homeScore = regScore(hLs, h.score);
+        const awayScore = regScore(aLs, a.score);
+
+        results[e.id] = {
+          t1: hn, t2: an,
+          home: homeScore, away: awayScore,
+          scoreStr: `${hn} ${homeScore} - ${awayScore} ${an} (90 min)`,
+        };
+      } else {
+        // Non-soccer sports: wait for the full game to end as normal
+        if (state !== "post") continue;
+        const hn = h.team?.displayName || "";
+        const an = a.team?.displayName || "";
+        results[e.id] = {
+          t1: hn, t2: an,
+          home: parseInt(h.score || 0, 10),
+          away: parseInt(a.score || 0, 10),
+          scoreStr: `${hn} ${h.score || 0} - ${a.score || 0} ${an}`,
+        };
+      }
     }
     return results;
   } catch { return {}; }
