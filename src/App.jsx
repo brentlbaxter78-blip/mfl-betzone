@@ -228,6 +228,15 @@ const fetchESPN = async () => {
     const today = todayET();
     let evs = (d.events||[]).filter(e => dateStrET(e.date) === today);
 
+    // If ESPN's default scoreboard has already rolled over past today (common ~11pm ET,
+    // sometimes earlier), explicitly request today's date before assuming there are no games
+    if (evs.length===0) {
+      try {
+        const todayRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=${today.replace(/-/g,"")}`);
+        if (todayRes.ok) { const todayD=await todayRes.json(); evs=(todayD.events||[]).filter(e=>dateStrET(e.date)===today); }
+      } catch {}
+    }
+
     // If today has no games yet, show yesterday's completed results while waiting
     if (evs.length===0) {
       const yd = yesterdayStrET();
