@@ -765,6 +765,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [betNotifs,setBetNotifs]=useState([]);
   const [adminNotifs,setAdminNotifs]=useState([]); // settled bets house hasn't seen yet
   const [patchNotifs,setPatchNotifs]=useState([]); // unseen patch note entries
+  const [giftNotifs,setGiftNotifs]=useState([]); // unseen received-gift transactions
   const [patchNotesOpen,setPatchNotesOpen]=useState(false); // collapsible full history in Profile
   const [settleScores,setSettleScores]=useState({});
   const [lbOpen,setLbOpen]=useState(false);
@@ -915,6 +916,25 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       localStorage.setItem("mfl_patch_seen",String(maxId));
     }catch(e){}
     setPatchNotifs([]);
+  };
+
+  // Gift received: show a one-time popup when a new incoming gift transaction appears
+  useEffect(()=>{
+    if(isAdmin||!txs.length)return;
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_gift_notifs")||"[]");
+      const unseen=txs.filter(t=>t.type==="deposit"&&(t.note||"").startsWith("🎁 Gift from")&&!seen.includes(t.id));
+      if(unseen.length)setGiftNotifs(unseen);
+    }catch(e){}
+  },[txs,isAdmin]);
+  const dismissGiftNotifs=()=>{
+    const t=giftNotifs[0];
+    if(!t)return;
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_gift_notifs")||"[]");
+      localStorage.setItem("mfl_gift_notifs",JSON.stringify([...seen,t.id]));
+    }catch(e){}
+    setGiftNotifs(g=>g.slice(1));
   };
 
   const dismissNotif=id=>{
@@ -1428,6 +1448,27 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         </div>
       )}
 
+      {/* GIFT RECEIVED POPUP */}
+      {giftNotifs.length>0&&(()=>{
+        const t=giftNotifs[0];
+        const sender=(t.note||"").replace("🎁 Gift from ","");
+        return(
+          <div style={S.over}>
+            <div style={{...S.modal,textAlign:"center"}}>
+              <div style={{fontSize:48,marginBottom:8}}>🎁</div>
+              <div style={{fontSize:20,fontWeight:900,color:C.green,marginBottom:6}}>You Got a Gift!</div>
+              <div style={{fontSize:15,color:C.sub,marginBottom:4}}>
+                <strong style={{color:C.gold}}>{sender}</strong> sent you
+              </div>
+              <div style={{fontSize:32,fontWeight:900,color:C.green,marginBottom:18}}>₿{t.amount.toFixed(2)}</div>
+              <button style={{...S.btn,width:"100%",padding:"15px",background:C.green}} onClick={dismissGiftNotifs}>
+                {giftNotifs.length>1?`Next (${giftNotifs.length-1} more)`:"Got it!"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       <header style={S.hdr}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 16px 10px"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1890,6 +1931,31 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               ))}
             </div>
             <ST title="My Bets" sub="All bets are final — no refunds"/>
+            {/* Recent gifts — sent and received, last 24 hours */}
+            {(()=>{
+              const dayAgo=Date.now()-24*60*60*1000;
+              const recentGifts=txs.filter(t=>(t.note||"").includes("Gift")&&new Date(t.created_at).getTime()>dayAgo)
+                .sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+              if(!recentGifts.length)return null;
+              return(
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:10,fontWeight:700,color:C.dim,letterSpacing:"0.08em",marginBottom:8}}>🎁 RECENT GIFTS</div>
+                  {recentGifts.map(t=>{
+                    const received=t.type==="deposit";
+                    const otherName=(t.note||"").replace("🎁 Gift from ","").replace("🎁 Gift to ","");
+                    return(
+                      <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"10px 14px",marginBottom:6}}>
+                        <div>
+                          <div style={{fontSize:12,fontWeight:700,color:C.text}}>{received?`From ${otherName}`:`To ${otherName}`}</div>
+                          <div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(t.created_at)}</div>
+                        </div>
+                        <div style={{fontSize:14,fontWeight:800,color:received?C.green:"#FF6B35"}}>{received?"+":"−"}₿{t.amount.toFixed(2)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {bets.length===0?<Empty icon="🎯" title="No bets yet" sub="Go to the Games tab to place a bet"/>
             :bets.map(bet=>(
               <div key={bet.id} style={{...S.card,marginBottom:10}}>
@@ -2229,15 +2295,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {txs.length>0&&(
               <div style={{...S.card,marginBottom:10}}>
                 <RL label="TRANSACTION HISTORY"/>
-                {txs.map(tx=>(
-                  <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                    <div><div style={{fontSize:13,fontWeight:700,color:C.text}}>{tx.type==="deposit"?"💵 Deposit":"💸 Withdrawal"}</div><div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(tx.created_at)}</div></div>
-                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                {txs.map(tx=>{
+                  const isGift=(tx.note||"").includes("Gift");
+                  return isGift?(
+                    <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 10px",marginBottom:6,borderRadius:8,background:"#FFD60012",border:`1px solid ${C.gold}33`}}>
+                      <div><div style={{fontSize:13,fontWeight:700,color:C.gold}}>🎁 {tx.note}</div><div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(tx.created_at)}</div></div>
                       <span style={{fontSize:13,fontWeight:800,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span>
-                      <SPill s={tx.status}/>
                     </div>
-                  </div>
-                ))}
+                  ):(
+                    <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <div><div style={{fontSize:13,fontWeight:700,color:C.text}}>{tx.type==="deposit"?"💵 Deposit":"💸 Withdrawal"}</div><div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(tx.created_at)}</div></div>
+                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                        <span style={{fontSize:13,fontWeight:800,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span>
+                        <SPill s={tx.status}/>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
             {/* Friends / The Group */}
@@ -2283,9 +2357,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                                   {pb.slice(0,8).map(b=>{
                                     const leg=b.legs?.[0];
                                     if(!leg) return null;
-                                    const won=b.status==="won", lost=b.status==="lost", pend=b.status==="pending";
+                                    const won=b.status==="won", lost=b.status==="lost", cancelled=b.status==="cancelled", pend=b.status==="pending";
                                     return(
-                                      <div key={b.id} style={{background:C.bg,borderRadius:10,padding:"10px 12px",marginBottom:6,border:`1px solid ${won?C.green+"44":lost?"#FF525244":C.border}`}}>
+                                      <div key={b.id} style={{background:C.bg,borderRadius:10,padding:"10px 12px",marginBottom:6,border:`1px solid ${won?C.green+"44":lost?"#FF525244":cancelled?"#FF980044":C.border}`}}>
                                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                                           <div style={{flex:1,minWidth:0}}>
                                             <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:2}}>{betLabel(leg.fighter)}</div>
@@ -2293,10 +2367,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                                             <div style={{fontSize:10,color:C.dim}}>{fmtDate(b.placed_at)}</div>
                                           </div>
                                           <div style={{textAlign:"right",flexShrink:0,marginLeft:10}}>
-                                            <div style={{fontSize:11,fontWeight:700,color:won?C.green:lost?"#FF5252":C.gold}}>
-                                              {won?"🏆 WON":lost?"❌ LOST":"⏳ PENDING"}
+                                            <div style={{fontSize:11,fontWeight:700,color:won?C.green:lost?"#FF5252":cancelled?"#FF9800":C.gold}}>
+                                              {won?"🏆 WON":lost?"❌ LOST":cancelled?"↩ REFUNDED":"⏳ PENDING"}
                                             </div>
-                                            <div style={{fontSize:10,color:C.dim,marginTop:2}}>₿{b.stake} to win ₿{(b.potential_win||0).toFixed(2)}</div>
+                                            <div style={{fontSize:10,color:C.dim,marginTop:2}}>{cancelled?`₿${b.stake} refunded`:`₿${b.stake} to win ₿${(b.potential_win||0).toFixed(2)}`}</div>
                                           </div>
                                         </div>
                                         {leg.result&&<div style={{fontSize:10,color:C.dim,marginTop:5,paddingTop:5,borderTop:`1px solid ${C.border}`}}>Final: {leg.result}</div>}
@@ -2548,7 +2622,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {(()=>{
               const wonBets=allBets.filter(b=>b.status==="won");
               const lostBets=allBets.filter(b=>b.status==="lost");
-              const totalPayouts=+wonBets.reduce((a,b)=>a+b.stake+(b.potential_win||0),0).toFixed(2);
+              // House P&L per bet: WON → house only loses the profit portion (potential_win) —
+              // the stake was already collected at placement so it nets to zero on a win.
+              // LOST → house keeps the full stake. This matches the math in the house P&L popup.
+              const totalPayouts=+wonBets.reduce((a,b)=>a+(b.potential_win||0),0).toFixed(2);
               const totalCollections=+lostBets.reduce((a,b)=>a+b.stake,0).toFixed(2);
               const netFromBetting=+(totalCollections-totalPayouts).toFixed(2);
               const findP=uid=>users.find(u=>u.id===uid);
@@ -2556,7 +2633,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               return(
                 <div style={{...S.card,marginBottom:14,border:`1px solid ${C.border}`}}>
                   <div style={{fontSize:11,fontWeight:700,color:C.text,letterSpacing:"0.08em",marginBottom:10}}>📊 BET PAYOUTS & COLLECTIONS</div>
-                  <div style={{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.5}}>All-time money paid out to winning bets vs. collected from losing bets — separate from cash deposits/withdrawals above.</div>
+                  <div style={{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.5}}>All-time profit paid to winning bets vs. stakes collected from losing bets — separate from cash deposits/withdrawals above.</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
                     <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
                       <div style={{fontSize:10,color:C.dim,marginBottom:4}}>PAID OUT</div>
@@ -2581,7 +2658,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         const won=b.status==="won";
                         const player=findP(b.user_id);
                         const leg=b.legs?.[0];
-                        const amount=won?+(b.stake+(b.potential_win||0)).toFixed(2):b.stake;
+                        // House P&L impact: win → just the profit paid out; loss → full stake kept
+                        const amount=won?+(b.potential_win||0).toFixed(2):b.stake;
                         return(
                           <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
                             <div style={{flex:1,minWidth:0}}>
@@ -2681,12 +2759,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         ))}
                       </>}
                       {ut.length>0&&<><RL label="TRANSACTIONS" style={{marginTop:10}}/>
-                        {ut.slice(0,5).map(tx=>(
-                          <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}>
-                            <span style={{color:C.sub}}>{tx.type==="deposit"?"💵":"💸"} {fmtDate(tx.created_at)}</span>
-                            <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontWeight:700,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span><SPill s={tx.status}/></div>
-                          </div>
-                        ))}
+                        {ut.slice(0,5).map(tx=>{
+                          const isGift=(tx.note||"").includes("Gift");
+                          return isGift?(
+                            <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 10px",marginBottom:5,borderRadius:8,background:"#FFD60012",border:`1px solid ${C.gold}33`}}>
+                              <div>
+                                <div style={{fontSize:12,fontWeight:700,color:C.gold}}>🎁 {tx.note}</div>
+                                <div style={{fontSize:10,color:C.dim,marginTop:1}}>{fmtDate(tx.created_at)}</div>
+                              </div>
+                              <span style={{fontSize:13,fontWeight:800,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span>
+                            </div>
+                          ):(
+                            <div key={tx.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}>
+                              <span style={{color:C.sub}}>{tx.type==="deposit"?"💵":"💸"} {fmtDate(tx.created_at)}</span>
+                              <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontWeight:700,color:tx.type==="deposit"?C.green:"#FF6B35"}}>{tx.type==="deposit"?"+":"−"}₿{tx.amount.toFixed(2)}</span><SPill s={tx.status}/></div>
+                            </div>
+                          );
+                        })}
                       </>}
                       <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
                         {u.username===TEST_USER&&(
