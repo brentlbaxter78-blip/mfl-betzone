@@ -528,7 +528,32 @@ const TERMS = [
   {n:"1",t:"Don't leak outside of MFL. What happens in MFL Betzone stays in MFL Betzone. Do not share bet details, balances, or any platform info outside the group."},
   {n:"2",t:"Gamble responsibly. Only bet what you can afford to lose. This is for fun — if it stops being fun, stop betting."},
   {n:"3",t:"No refunds. Once a bet is placed and confirmed, it is final. No cancellations or reversals for any reason. Always verify before confirming."},
-  {n:"4",t:"Odds and betting open every day at 8:00 AM ET. Opening lines may be shown earlier for reference only — no bets can be placed before 8 AM. Betting closes 3 minutes before each game's scheduled start, or immediately when a game goes live, whichever comes first."},
+  {n:"4",t:"Betting opens automatically as soon as the next day's games are posted — no fixed daily start time. Betting closes 3 minutes before each game's scheduled start, or immediately when a game goes live, whichever comes first."},
+];
+
+// ─── PATCH NOTES ────────────────────────────────────────────────────────────
+// Player-facing changelog. Add a new entry (with the next sequential id) any
+// time a player-visible feature ships — admin-only changes don't belong here.
+// Players see a one-time popup summarizing everything new since their last
+// visit, and can revisit the full history any time from Profile > Patch Notes.
+const PATCH_NOTES = [
+  {
+    id: 1,
+    version: "1.1",
+    date: "June 2026",
+    items: [
+      "⚽ World Cup Draw is back for every game, including knockout rounds — bets settle on the 90-minute score, just like FanDuel",
+      "⚡ Knockout bets now settle right when regulation ends, instead of waiting through extra time and penalties",
+      "📊 Live game cards now show the score and clock even after you've placed a bet",
+      "✅ Your pick gets a green checkmark highlight, plus a bet summary right at the top of the card",
+      "🎁 Gift Brent Bucks directly to other players from Profile → The Group",
+      "🏁 New Monthly Race leaderboard — compete across 4 categories for points and a monthly prize",
+      "⏳ New All Time leaderboard tab for season-long stats",
+      "📈 Win % now shown on your stats",
+      "🎨 Customize the app's look — pick a background and accent color in Profile → Appearance",
+      "🔓 Betting now opens automatically as soon as new games are posted — no more fixed daily start time",
+    ],
+  },
 ];
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
@@ -539,6 +564,14 @@ export default function App(){
   const [wcLoading,setWcLoading]=useState(true);
   const [mlb,setMlb]=useState([]);
   const [mlbLoading,setMlbLoading]=useState(true);
+  // Theme can change at runtime via Settings — bump this to force a full re-render
+  // so every component picks up the freshly-mutated C/S color values
+  const [,setThemeTick]=useState(0);
+  useEffect(()=>{
+    const h=()=>setThemeTick(t=>t+1);
+    window.addEventListener("mfl-theme-change",h);
+    return()=>window.removeEventListener("mfl-theme-change",h);
+  },[]);
   const showToast=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),4000);};
   const refreshWC=useCallback(async()=>{const g=await fetchWC();setWc(g);setWcLoading(false);},[]);
   const refreshMLB=useCallback(async()=>{const g=await fetchMLB();setMlb(g);setMlbLoading(false);},[]);
@@ -721,21 +754,38 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [houseSeed,setHouseSeed]=useState("");
   const [expanded,setExpanded]=useState(null); const [showPw,setShowPw]=useState({});
   const [betNotifs,setBetNotifs]=useState([]);
+  const [adminNotifs,setAdminNotifs]=useState([]); // settled bets house hasn't seen yet
+  const [patchNotifs,setPatchNotifs]=useState([]); // unseen patch note entries
+  const [patchNotesOpen,setPatchNotesOpen]=useState(false); // collapsible full history in Profile
   const [settleScores,setSettleScores]=useState({});
   const [lbOpen,setLbOpen]=useState(false);
   const [lbTab,setLbTab]=useState(0);
   const [lbMainTab,setLbMainTab]=useState(0); // 0=Monthly Race, 1=All Time
   const [monthlyPrize,setMonthlyPrize]=useState(null);
   const [prizeInput,setPrizeInput]=useState('');
+  const [giftTarget,setGiftTarget]=useState(null); // {id, name}
+  const [giftAmount,setGiftAmount]=useState('');
+  const [gifting,setGifting]=useState(false);
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [delConfirmText,setDelConfirmText]=useState("");
   const [confirm,setConfirm]=useState(null);
   const [settleConfirm,setSettleConfirm]=useState(null); // {betId,outcome} — two-step confirm for manual settle
+  const [cancelConfirm,setCancelConfirm]=useState(null); // betId — two-step confirm for refund
+  const [manualUnlocked,setManualUnlocked]=useState(false);
+  const [colorsOpen,setColorsOpen]=useState(false);
+  // Local mirror of saved theme so the UI re-renders to show the active selection
+  const [themeChoice,setThemeChoice]=useState(()=>getSavedTheme()||{bg:"dark",accent:C.gold});
+  const changeTheme=(bgKey,accentHex)=>{
+    const next={bg:bgKey,accent:accentHex};
+    applyTheme(bgKey,accentHex);
+    setThemeChoice(next);
+  };
+  const [manualPwInput,setManualPwInput]=useState('');
   const [tick,setTick]=useState(0);
   const [pendingAction,setPendingAction]=useState(null); // {type,amount,secsLeft} — countdown before submitting
   const pendingTimerRef=useRef(null);
-  const [showOddsAnyway,setShowOddsAnyway]=useState(new Set()); // games where user wants live odds despite having a bet
+  // (showOddsAnyway removed — buttons are now always visible with green-check highlighting for existing bets)
   useEffect(()=>{const iv=setInterval(()=>setTick(t=>t+1),30000);return()=>clearInterval(iv);},[]);
 
   const load=useCallback(async()=>{
@@ -822,6 +872,41 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       if(unseen.length)setBetNotifs(unseen);
     }catch(e){}
   },[bets,isAdmin]);
+
+  // Admin: summarize house P&L from bets settled since last check (auto-settlement runs constantly)
+  useEffect(()=>{
+    if(!isAdmin||!allBets.length)return;
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_admin_notifs")||"[]");
+      const unseen=allBets.filter(b=>(b.status==="won"||b.status==="lost")&&!seen.includes(b.id));
+      if(unseen.length)setAdminNotifs(unseen);
+    }catch(e){}
+  },[allBets,isAdmin]);
+
+  const dismissAdminNotifs=()=>{
+    try{
+      const seen=JSON.parse(localStorage.getItem("mfl_admin_notifs")||"[]");
+      const ids=adminNotifs.map(b=>b.id);
+      localStorage.setItem("mfl_admin_notifs",JSON.stringify([...seen,...ids]));
+    }catch(e){}
+    setAdminNotifs([]);
+  };
+
+  // Patch notes: show a one-time popup for any entries the player hasn't seen yet
+  useEffect(()=>{
+    try{
+      const seenId=parseInt(localStorage.getItem("mfl_patch_seen")||"0",10);
+      const unseen=PATCH_NOTES.filter(p=>p.id>seenId);
+      if(unseen.length)setPatchNotifs(unseen);
+    }catch(e){}
+  },[]);
+  const dismissPatchNotifs=()=>{
+    try{
+      const maxId=Math.max(...patchNotifs.map(p=>p.id));
+      localStorage.setItem("mfl_patch_seen",String(maxId));
+    }catch(e){}
+    setPatchNotifs([]);
+  };
 
   const dismissNotif=id=>{
     try{
@@ -974,6 +1059,25 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
+  };
+  const sendGift=async()=>{
+    const a=parseFloat(giftAmount);
+    if(!giftTarget)return;
+    if(!a||a<=0)return showToast("Enter a valid amount","error");
+    setGifting(true);
+    try{
+      const [freshMe,freshTarget]=await Promise.all([db.getUser(session.userId),db.getUser(giftTarget.id)]);
+      const me=freshMe?.[0],t=freshTarget?.[0];
+      if(!me||!t){setGifting(false);return showToast("Error finding accounts","error");}
+      if(me.balance<a){setGifting(false);return showToast("You don't have enough Brent Bucks for that","error");}
+      await db.patchUser(me.id,{balance:+(me.balance-a).toFixed(2)});
+      await db.patchUser(t.id,{balance:+(t.balance+a).toFixed(2)});
+      await db.addTx({user_id:t.id,type:"deposit",amount:a,status:"approved",note:`🎁 Gift from ${user.display_name||user.username}`});
+      await db.addTx({user_id:me.id,type:"withdraw",amount:a,status:"approved",note:`🎁 Gift to ${giftTarget.name}`});
+      showToast(`₿${a} sent to ${giftTarget.name} 🎁`);
+      setGiftTarget(null);setGiftAmount("");await load();
+    }catch(e){showToast("Error sending gift","error");}
+    setGifting(false);
   };
   const savePrize=async()=>{
     const a=parseFloat(prizeInput);
@@ -1238,6 +1342,80 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
           </div>
         );
       })()}
+
+      {/* ADMIN HOUSE P&L SUMMARY POPUP — shown when new bets have settled since last visit */}
+      {adminNotifs.length>0&&(()=>{
+        // House impact: bet won → house pays out potential_win (house loses that amount)
+        //               bet lost → house keeps the stake (house gains that amount)
+        const impacts=adminNotifs.map(b=>({
+          bet:b,
+          impact: b.status==="won" ? -(b.potential_win||0) : b.stake,
+        }));
+        const netTotal=+impacts.reduce((a,x)=>a+x.impact,0).toFixed(2);
+        const houseUp=netTotal>=0;
+        const findP=uid=>users.find(u=>u.id===uid);
+        return(
+          <div style={S.over}>
+            <div style={S.modal}>
+              <div style={{textAlign:"center",marginBottom:14}}>
+                <div style={{fontSize:48,marginBottom:8}}>{houseUp?"💰":"📉"}</div>
+                <div style={{fontSize:22,fontWeight:900,color:houseUp?C.green:"#E53935",marginBottom:4}}>
+                  House {houseUp?"Up":"Down"} ₿{Math.abs(netTotal).toFixed(2)}
+                </div>
+                <div style={{fontSize:12,color:C.dim}}>{adminNotifs.length} bet{adminNotifs.length!==1?"s":""} settled since you last checked</div>
+              </div>
+              <div style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"12px",marginBottom:16,maxHeight:280,overflowY:"auto"}}>
+                {impacts.map(({bet,impact})=>{
+                  const player=findP(bet.user_id);
+                  const leg=bet.legs?.[0];
+                  return(
+                    <div key={bet.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                          {player?.display_name||player?.username||"Player"}
+                        </div>
+                        <div style={{fontSize:10,color:C.dim,marginTop:1}}>{betLabel(leg?.fighter)} · {bet.status==="won"?"🏆 won":"❌ lost"}</div>
+                      </div>
+                      <div style={{fontSize:13,fontWeight:800,color:impact>=0?C.green:"#E53935",flexShrink:0,marginLeft:10}}>
+                        {impact>=0?"+":"-"}₿{Math.abs(impact).toFixed(2)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button style={{...S.btn,width:"100%",padding:"15px",background:houseUp?C.green:"#E53935"}} onClick={dismissAdminNotifs}>Got it!</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* PATCH NOTES POPUP — shown once when new updates exist since last visit */}
+      {patchNotifs.length>0&&(
+        <div style={S.over}>
+          <div style={S.modal}>
+            <div style={{textAlign:"center",marginBottom:16}}>
+              <div style={{fontSize:40,marginBottom:8}}>🆕</div>
+              <div style={{fontSize:20,fontWeight:900,color:C.gold}}>What's New</div>
+              <div style={{fontSize:12,color:C.dim,marginTop:4}}>{patchNotifs.length>1?`${patchNotifs.length} updates since your last visit`:"Latest update"}</div>
+            </div>
+            <div style={{maxHeight:360,overflowY:"auto",marginBottom:16}}>
+              {patchNotifs.map(p=>(
+                <div key={p.id} style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px",marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                    <span style={{fontSize:13,fontWeight:800,color:C.gold}}>Version {p.version}</span>
+                    <span style={{fontSize:10,color:C.dim}}>{p.date}</span>
+                  </div>
+                  {p.items.map((item,i)=>(
+                    <div key={i} style={{fontSize:12,color:C.sub,marginBottom:7,lineHeight:1.5}}>{item}</div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <button style={{...S.btn,width:"100%",padding:"15px"}} onClick={dismissPatchNotifs}>Got it!</button>
+          </div>
+        </div>
+      )}
+
       <header style={S.hdr}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 16px 10px"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1382,14 +1560,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
                     </div>
                   ))}
-                  {/* Bet display — locked odds for users who have bet, live odds for everyone else */}
-                  {myGameBets.length>0&&!isAdmin&&!showOddsAnyway.has(g.id)?(
-                    // User has a bet — show their locked odds, no live updates needed
-                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
-                      <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:8}}>✅ YOUR LOCKED ODDS</div>
+                  {/* Bet summary bar — always visible at top when user has a pending bet on this game */}
+                  {myGameBets.length>0&&!isAdmin&&(
+                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"10px 14px",marginBottom:10}}>
+                      <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:6}}>✅ YOUR BET</div>
                       {myGameBets.map(b=>(
-                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:13,flexWrap:"wrap",marginBottom:4}}>
-                          <Flag team={b.legs?.[0]?.fighter} size={16}/>
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap",marginBottom:2}}>
+                          <Flag team={b.legs?.[0]?.fighter} size={14}/>
                           <strong style={{color:C.gold}}>{b.legs?.[0]?.fighter}</strong>
                           <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                           <span style={{color:C.dim}}>·</span>
@@ -1398,15 +1575,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           <span style={{color:C.green}}>₿{(b.potential_win||0).toFixed(2)}</span>
                         </div>
                       ))}
-                      <div style={{fontSize:10,color:C.dim,marginTop:6}}>These are your odds — locked in, won't change</div>
-                      {!closed&&!isLive&&<button onClick={()=>setShowOddsAnyway(s=>new Set([...s,g.id]))} style={{marginTop:8,background:"none",border:`1px solid ${C.border}`,color:C.dim,borderRadius:6,padding:"4px 10px",fontSize:10,cursor:"pointer"}}>Place another bet →</button>}
                     </div>
-                  ):(
-                    // Live odds buttons — for users who haven't bet (or clicked "place another bet")
-                    <>
-                      {myGameBets.length>0&&showOddsAnyway.has(g.id)&&(
-                        <div style={{fontSize:10,color:C.dim,textAlign:"center",marginBottom:6}}>Current odds — your existing bet is still locked in at what you placed</div>
-                      )}
+                  )}
                   {early?(
                     <div>
                       {(g.usingRealOdds&&g.o1&&g.o2)&&(
@@ -1431,7 +1601,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {isFinal?"✓ Final — no more bets":isPostponed?"⚠️ Postponed — bets will be refunded":isLive?"⚽ In progress — no new bets":"🔒 Betting closes 3 min before kickoff"}
                     </div>
                   )}
-                  {/* Score shown for LIVE and FINAL games */}
+                  {/* Score shown for LIVE and FINAL games — always visible, even if user has a bet */}
                   {(isLive||isFinal)&&g.score&&(
                     <div style={{background:"#091509",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,fontSize:17,fontWeight:900,color:C.text}}>
@@ -1444,23 +1614,32 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       </div>
                     </div>
                   )}
+                  {(()=>{
+                    const myFighter=myGameBets[0]?.legs?.[0]?.fighter;
+                    const isMine=t=>!pick&&myFighter===t;
+                    return(
                   <div style={{display:"flex",gap:5}}>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),...(isMine("Draw")?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {isMine("Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <span style={{fontSize:17}}>⚖️</span>
                       <span style={{fontSize:10,fontWeight:700,color:C.dim}}>DRAW</span>
                       <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(g.oDraw)}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:13,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
                     </button>
                   </div>
+                    );
+                  })()}
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
@@ -1491,7 +1670,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {g.isKnockout&&<div style={{fontSize:10,color:C.dim,marginTop:2}}>⏱ 90-min result · Draw pays if tied at full time</div>}
                     </div>
                   )}
-                  </>)}
                   </>)}
                 </div>
               );
@@ -1583,12 +1761,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
                     </div>
                   ))}
-                  {myGameBets.length>0&&!isAdmin&&!showOddsAnyway.has(g.id)?(
-                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
-                      <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:8}}>✅ YOUR LOCKED ODDS</div>
+                  {/* Bet summary bar — always visible at top when user has a pending bet on this game */}
+                  {myGameBets.length>0&&!isAdmin&&(
+                    <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"10px 14px",marginBottom:10}}>
+                      <div style={{fontSize:9,fontWeight:700,color:C.green,letterSpacing:"0.06em",marginBottom:6}}>✅ YOUR BET</div>
                       {myGameBets.map(b=>(
-                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:13,flexWrap:"wrap",marginBottom:4}}>
-                          <MLBLogo abbr={b.legs?.[0]?.fighter===g.t1?g.abbr1:g.abbr2} size={16}/>
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap",marginBottom:2}}>
+                          <MLBLogo abbr={b.legs?.[0]?.fighter===g.t1?g.abbr1:g.abbr2} size={14}/>
                           <strong style={{color:C.gold}}>{b.legs?.[0]?.fighter}</strong>
                           <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
                           <span style={{color:C.dim}}>·</span>
@@ -1597,14 +1776,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           <span style={{color:C.green}}>₿{(b.potential_win||0).toFixed(2)}</span>
                         </div>
                       ))}
-                      <div style={{fontSize:10,color:C.dim,marginTop:6}}>These are your odds — locked in, won't change</div>
-                      {!closed&&!isLive&&<button onClick={()=>setShowOddsAnyway(s=>new Set([...s,g.id]))} style={{marginTop:8,background:"none",border:`1px solid ${C.border}`,color:C.dim,borderRadius:6,padding:"4px 10px",fontSize:10,cursor:"pointer"}}>Place another bet →</button>}
                     </div>
-                  ):(
-                    <>
-                      {myGameBets.length>0&&showOddsAnyway.has(g.id)&&(
-                        <div style={{fontSize:10,color:C.dim,textAlign:"center",marginBottom:6}}>Current odds — your existing bet is still locked in at what you placed</div>
-                      )}
+                  )}
                   {early?(
                     <div>
                       {(g.usingRealOdds&&g.o1&&g.o2)&&(
@@ -1634,18 +1807,26 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{fontSize:11,fontWeight:700,color:C.green,background:"#00E67618",padding:"3px 10px",borderRadius:5,letterSpacing:"0.04em"}}>{g.period||"● LIVE"}</div>
                     </div>
                   )}
+                  {(()=>{
+                    const myFighter=myGameBets[0]?.legs?.[0]?.fighter;
+                    const isMine=t=>!pick&&myFighter===t;
+                    return(
                   <div style={{display:"flex",gap:8}}>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <MLBLogo abbr={g.abbr1} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:14,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer"}}>
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <MLBLogo abbr={g.abbr2} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:14,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
                     </button>
                   </div>
+                    );
+                  })()}
                   {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
@@ -1674,7 +1855,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       Betting closes at <strong style={{color:"#E53935"}}>{bettingClosesAt(g.dt)}</strong>
                     </div>
                   )}
-                  </>)}
                   </>)}
                 </div>
               );
@@ -1750,6 +1930,70 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <button onClick={togglePrivacy} style={{...S.btn,background:"transparent",border:`1px solid ${user.privacy_public?C.green+"44":C.gold+"44"}`,color:user.privacy_public?C.green:C.gold,fontSize:11,padding:"9px 13px",whiteSpace:"nowrap"}}>
                 {user.privacy_public?"🟢 Public":"🔴 Private"}
               </button>
+            </div>
+            {/* Appearance / theme customization */}
+            <div style={{...S.card,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setColorsOpen(o=>!o)}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:18}}>🎨</span>
+                  <div><div style={{fontSize:14,fontWeight:800,color:C.text}}>Appearance</div>
+                  <div style={{fontSize:11,color:C.dim,marginTop:1}}>Background & accent color</div></div>
+                </div>
+                <span style={{color:C.dim,fontSize:13}}>{colorsOpen?"▲":"▼"}</span>
+              </div>
+              {colorsOpen&&(
+                <div style={{marginTop:14}}>
+                  <div style={{fontSize:10,fontWeight:700,color:C.dim,letterSpacing:"0.08em",marginBottom:8}}>BACKGROUND</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:18}}>
+                    {Object.entries(THEME_PRESETS).map(([key,preset])=>(
+                      <button key={key} onClick={()=>changeTheme(key,themeChoice.accent)}
+                        style={{background:preset.bg,border:`2px solid ${themeChoice.bg===key?themeChoice.accent:preset.border}`,borderRadius:10,padding:"14px 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+                        <div style={{width:"100%",height:18,background:preset.card,borderRadius:5,border:`1px solid ${preset.border}`}}/>
+                        <span style={{fontSize:11,fontWeight:700,color:preset.text}}>{preset.name}</span>
+                        {themeChoice.bg===key&&<span style={{fontSize:9,fontWeight:700,color:themeChoice.accent}}>✓ ACTIVE</span>}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{fontSize:10,fontWeight:700,color:C.dim,letterSpacing:"0.08em",marginBottom:8}}>ACCENT COLOR</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+                    {ACCENT_COLORS.map(c=>(
+                      <button key={c.hex} onClick={()=>changeTheme(themeChoice.bg,c.hex)}
+                        style={{background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:5,padding:"6px 2px"}}>
+                        <div style={{width:38,height:38,borderRadius:"50%",background:c.hex,border:themeChoice.accent===c.hex?`3px solid ${C.text}`:"3px solid transparent",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:themeChoice.accent===c.hex?`0 0 0 2px ${c.hex}55`:"none"}}>
+                          {themeChoice.accent===c.hex&&<span style={{fontSize:16,color:"#000",fontWeight:900}}>✓</span>}
+                        </div>
+                        <span style={{fontSize:9,fontWeight:600,color:C.dim}}>{c.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Patch Notes — full history, revisit any past update */}
+            <div style={{...S.card,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setPatchNotesOpen(o=>!o)}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:18}}>📋</span>
+                  <div><div style={{fontSize:14,fontWeight:800,color:C.text}}>Patch Notes</div>
+                  <div style={{fontSize:11,color:C.dim,marginTop:1}}>What's changed, version by version</div></div>
+                </div>
+                <span style={{color:C.dim,fontSize:13}}>{patchNotesOpen?"▲":"▼"}</span>
+              </div>
+              {patchNotesOpen&&(
+                <div style={{marginTop:14}}>
+                  {[...PATCH_NOTES].reverse().map(p=>(
+                    <div key={p.id} style={{background:C.bg,borderRadius:12,border:`1px solid ${C.border}`,padding:"14px",marginBottom:10}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                        <span style={{fontSize:13,fontWeight:800,color:C.gold}}>Version {p.version}</span>
+                        <span style={{fontSize:10,color:C.dim}}>{p.date}</span>
+                      </div>
+                      {p.items.map((item,i)=>(
+                        <div key={i} style={{fontSize:12,color:C.sub,marginBottom:7,lineHeight:1.5}}>{item}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             {/* Leaderboard — Monthly Race + All Time */}
             {(()=>{
@@ -1992,24 +2236,31 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   const open=expanded===p.id;
                   return(
                     <div key={p.id} style={{...S.card,marginBottom:8}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",minHeight:44}} onClick={()=>setExpanded(open?null:p.id)}>
-                        <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",minHeight:44}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,flex:1}} onClick={()=>setExpanded(open?null:p.id)}>
                           <Av name={p.display_name} size={38}/>
                           <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{p.display_name}</div><div style={{fontSize:11,color:C.dim}}>@{p.username} · {pb.length} bet{pb.length!==1?"s":""}</div></div>
                         </div>
-                        <span style={{color:C.dim,fontSize:12}}>{open?"▲":"▼"}</span>
+                        {!isAdmin&&p.id!==session.userId&&p.username!==TEST_USER&&(
+                          <button onClick={(e)=>{e.stopPropagation();setGiftTarget({id:p.id,name:p.display_name||p.username});setGiftAmount("");}} style={{...S.ghost,padding:"7px 11px",fontSize:11,marginRight:8,whiteSpace:"nowrap"}}>🎁 Gift</button>
+                        )}
+                        <span style={{color:C.dim,fontSize:12}} onClick={()=>setExpanded(open?null:p.id)}>{open?"▲":"▼"}</span>
                       </div>
                       {open&&(
                         <div style={{marginTop:10,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
                           {p.privacy_public?(
                             <>
-                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
-                                {[{l:"Deposited",v:`₿${(p.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(p.cash_out||0).toFixed(2)}`},{l:"P&L",v:`${pp>=0?"+":""}₿${pp.toFixed(2)}`,c:pp>=0?C.green:"#FF5252"}].map(s=>(
-                                  <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}>
-                                    <div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div>
-                                    <div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div>
-                                  </div>
-                                ))}
+                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                                {(()=>{
+                                  const settled=pb.filter(b=>b.status==="won"||b.status==="lost");
+                                  const winPct=settled.length>0?((pb.filter(b=>b.status==="won").length/settled.length)*100).toFixed(0):null;
+                                  return [{l:"Deposited",v:`₿${(p.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(p.cash_out||0).toFixed(2)}`},{l:"Win %",v:winPct!==null?`${winPct}%`:"—",c:winPct!==null?(winPct>=50?C.green:"#FF9800"):C.dim},{l:"P&L",v:`${pp>=0?"+":""}₿${pp.toFixed(2)}`,c:pp>=0?C.green:"#FF5252"}].map(s=>(
+                                    <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}>
+                                      <div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div>
+                                      <div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div>
+                                    </div>
+                                  ));
+                                })()}
                               </div>
                               {pb.length>0?(
                                 <>
@@ -2193,8 +2444,21 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               }
             </div>
 
-            {/* Settle pending bets */}
+            {/* Settle pending bets — password locked to prevent accidental manual payouts */}
             <ST title="Settle Bets" sub={`${pendBets.length} pending bets — mark won or lost after each game`}/>
+            {!manualUnlocked?(
+              <div style={{...S.card,textAlign:"center",padding:"24px 20px",marginBottom:14}}>
+                <div style={{fontSize:28,marginBottom:8}}>🔒</div>
+                <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>Manual settlement is locked</div>
+                <div style={{fontSize:11,color:C.dim,marginBottom:14,lineHeight:1.5}}>Auto-settlement handles almost everything. Enter the password to access manual won/lost/refund controls.</div>
+                <div style={{display:"flex",gap:8}}>
+                  <input style={{...S.inp,flex:1,textAlign:"center"}} type="password" placeholder="Password" value={manualPwInput}
+                    onChange={e=>setManualPwInput(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"){if(manualPwInput==="MAN"){setManualUnlocked(true);setManualPwInput("");}else{showToast("Wrong password","error");setManualPwInput("");}}}}/>
+                  <button style={{...S.btn,padding:"0 18px"}} onClick={()=>{if(manualPwInput==="MAN"){setManualUnlocked(true);setManualPwInput("");}else{showToast("Wrong password","error");setManualPwInput("");}}}>Unlock</button>
+                </div>
+              </div>
+            ):(<>
             {pendBets.length===0?<div style={{...S.card,textAlign:"center",padding:"20px",color:C.dim,marginBottom:14}}>No pending bets to settle</div>
             :pendBets.map(bet=>{
               const player=users.find(u=>u.id===bet.user_id);
@@ -2249,10 +2513,80 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       </div>
                     </div>
                   )}
-                  <button style={{marginTop:6,background:"none",border:"1px solid #FF980033",color:"#FF9800",borderRadius:8,padding:"7px",fontSize:10,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>cancelBet(bet.id)}>↩ Cancel bet &amp; refund ₿{bet.stake}</button>
+                  <button style={{marginTop:6,background:"none",border:"1px solid #FF980033",color:"#FF9800",borderRadius:8,padding:"7px",fontSize:10,fontWeight:600,cursor:"pointer",width:"100%"}} onClick={()=>setCancelConfirm(bet.id)}>↩ Cancel bet &amp; refund ₿{bet.stake}</button>
+                  {cancelConfirm===bet.id&&(
+                    <div style={{marginTop:8,background:"#0D0D1A",border:"1px solid #FF980055",borderRadius:10,padding:"14px"}}>
+                      <div style={{fontSize:13,fontWeight:800,color:"#FF9800",marginBottom:4}}>⚠️ Refund ₿{bet.stake} to {player?.display_name}?</div>
+                      <div style={{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.5}}>This cancels the bet and returns the stake. This cannot be undone.</div>
+                      <div style={{display:"flex",gap:8}}>
+                        <button style={{...S.btn,flex:1,padding:"12px",background:"#FF9800"}} onClick={()=>{cancelBet(bet.id);setCancelConfirm(null);}}>✓ YES, REFUND</button>
+                        <button style={{...S.ghost,flex:1,padding:"12px"}} onClick={()=>setCancelConfirm(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
+            </>)}
+
+            {/* Bet Payouts & Collections — all-time, separate from cash deposits/withdrawals */}
+            {(()=>{
+              const wonBets=allBets.filter(b=>b.status==="won");
+              const lostBets=allBets.filter(b=>b.status==="lost");
+              const totalPayouts=+wonBets.reduce((a,b)=>a+b.stake+(b.potential_win||0),0).toFixed(2);
+              const totalCollections=+lostBets.reduce((a,b)=>a+b.stake,0).toFixed(2);
+              const netFromBetting=+(totalCollections-totalPayouts).toFixed(2);
+              const findP=uid=>users.find(u=>u.id===uid);
+              const allSettled=[...wonBets,...lostBets].sort((a,b)=>new Date(b.placed_at)-new Date(a.placed_at));
+              return(
+                <div style={{...S.card,marginBottom:14,border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.text,letterSpacing:"0.08em",marginBottom:10}}>📊 BET PAYOUTS & COLLECTIONS</div>
+                  <div style={{fontSize:11,color:C.dim,marginBottom:12,lineHeight:1.5}}>All-time money paid out to winning bets vs. collected from losing bets — separate from cash deposits/withdrawals above.</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                    <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.dim,marginBottom:4}}>PAID OUT</div>
+                      <div style={{fontSize:17,fontWeight:900,color:"#FF6B35"}}>₿{totalPayouts.toFixed(2)}</div>
+                      <div style={{fontSize:9,color:C.dim,marginTop:2}}>{wonBets.length} win{wonBets.length!==1?"s":""}</div>
+                    </div>
+                    <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.dim,marginBottom:4}}>COLLECTED</div>
+                      <div style={{fontSize:17,fontWeight:900,color:C.green}}>₿{totalCollections.toFixed(2)}</div>
+                      <div style={{fontSize:9,color:C.dim,marginTop:2}}>{lostBets.length} loss{lostBets.length!==1?"es":""}</div>
+                    </div>
+                    <div style={{background:C.bg,borderRadius:10,padding:"12px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.dim,marginBottom:4}}>NET</div>
+                      <div style={{fontSize:17,fontWeight:900,color:netFromBetting>=0?C.gold:"#FF5252"}}>{netFromBetting>=0?"+":""}₿{netFromBetting.toFixed(2)}</div>
+                      <div style={{fontSize:9,color:C.dim,marginTop:2}}>from betting</div>
+                    </div>
+                  </div>
+                  {allSettled.length===0
+                    ?<div style={{textAlign:"center",color:C.dim,fontSize:12,padding:"12px 0"}}>No settled bets yet</div>
+                    :<div style={{maxHeight:300,overflowY:"auto"}}>
+                      {allSettled.slice(0,30).map(b=>{
+                        const won=b.status==="won";
+                        const player=findP(b.user_id);
+                        const leg=b.legs?.[0];
+                        const amount=won?+(b.stake+(b.potential_win||0)).toFixed(2):b.stake;
+                        return(
+                          <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                                {player?.display_name||player?.username||"Player"}
+                              </div>
+                              <div style={{fontSize:10,color:C.dim,marginTop:1}}>{betLabel(leg?.fighter)} · {fmtDate(b.placed_at)}</div>
+                            </div>
+                            <div style={{fontSize:13,fontWeight:800,color:won?"#FF6B35":C.green,flexShrink:0,marginLeft:10}}>
+                              {won?"−":"+"}₿{amount.toFixed(2)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {allSettled.length>30&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"8px 0 0"}}>+{allSettled.length-30} more</div>}
+                    </div>
+                  }
+                </div>
+              );
+            })()}
 
             {/* House tx history */}
             {allTxs.filter(t=>t.user_id===house?.id).length>0&&(
@@ -2310,9 +2644,14 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         </div>
                       </div>
                       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
-                        {[{l:"Balance",v:`₿${(u.balance||0).toFixed(2)}`},{l:"Deposited",v:`₿${(u.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(u.cash_out||0).toFixed(2)}`},{l:"Bets",v:ub.length},{l:"Wins",v:ub.filter(b=>b.status==="won").length},{l:"P&L",v:`${up>=0?"+":""}₿${up.toFixed(2)}`,c:up>=0?C.green:"#FF5252"}].map(s=>(
-                          <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div><div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div></div>
-                        ))}
+                        {(()=>{
+                          const settled=ub.filter(b=>b.status==="won"||b.status==="lost");
+                          const wins=ub.filter(b=>b.status==="won").length;
+                          const winPct=settled.length>0?((wins/settled.length)*100).toFixed(0):null;
+                          return [{l:"Balance",v:`₿${(u.balance||0).toFixed(2)}`},{l:"Deposited",v:`₿${(u.cash_in||0).toFixed(2)}`},{l:"Withdrawn",v:`₿${(u.cash_out||0).toFixed(2)}`},{l:"Bets",v:ub.length},{l:"Wins",v:wins},{l:"Win %",v:winPct!==null?`${winPct}%`:"—",c:winPct!==null?(winPct>=50?C.green:"#FF9800"):C.dim},{l:"P&L",v:`${up>=0?"+":""}₿${up.toFixed(2)}`,c:up>=0?C.green:"#FF5252"}].map(s=>(
+                            <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"9px",textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:s.c||C.text}}>{s.v}</div><div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div></div>
+                          ));
+                        })()}
                       </div>
                       {ub.length>0&&<><RL label="BETS"/>
                         {ub.slice(0,5).map(b=>(
@@ -2388,6 +2727,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
           );
         })}
       </nav>
+
+      {/* Gift modal */}
+      {giftTarget&&(
+        <div style={S.over} onClick={()=>!gifting&&setGiftTarget(null)}>
+          <div style={S.modal} onClick={e=>e.stopPropagation()}>
+            <div style={{textAlign:"center",marginBottom:18}}>
+              <div style={{fontSize:36,marginBottom:6}}>🎁</div>
+              <div style={{fontSize:18,fontWeight:800,color:C.text}}>Gift {giftTarget.name}</div>
+              <div style={{fontSize:12,color:C.dim,marginTop:4}}>Your balance: ₿{(user.balance||0).toFixed(2)}</div>
+            </div>
+            <div style={{...S.stakeW,marginBottom:14}}>
+              <span style={{fontSize:16,fontWeight:700,color:C.green,marginRight:6}}>₿</span>
+              <input style={S.stakeInp} type="number" placeholder="Amount" value={giftAmount} onChange={e=>setGiftAmount(e.target.value)} min="1" step="1" autoFocus/>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button style={{...S.ghost,flex:1,padding:"13px"}} onClick={()=>setGiftTarget(null)} disabled={gifting}>Cancel</button>
+              <button style={{...S.btn,flex:1,padding:"13px",background:C.green,opacity:gifting?0.6:1}} onClick={sendGift} disabled={gifting}>
+                {gifting?"Sending…":`Send ₿${giftAmount||"0"}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2423,3 +2785,63 @@ const S={
   over:{position:"fixed",inset:0,background:"#000000EE",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"},
   modal:{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:"22px 20px",maxWidth:420,width:"100%",maxHeight:"88vh",overflowY:"auto"},
 };
+
+// ─── THEME SYSTEM ──────────────────────────────────────────────────────────
+// 3 background presets (main color) + 8 accent color options (secondary/"gold")
+// C and S are mutated in place (not reassigned) so every existing C.xxx / S.xxx
+// reference throughout the app picks up new values on the next render —
+// no need to touch the hundreds of style references elsewhere in the file.
+const THEME_PRESETS = {
+  dark:  { name:"Dark",  bg:"#09090E", card:"#111119", border:"#1C1C2A", border2:"#2C2C3A", text:"#F0F0F5", sub:"#AAAABB", dim:"#55556A" },
+  gray:  { name:"Gray",  bg:"#1E1E22", card:"#28282E", border:"#34343C", border2:"#44444E", text:"#F0F0F2", sub:"#B8B8C0", dim:"#7A7A85" },
+  light: { name:"Light", bg:"#F5F5F7", card:"#FFFFFF", border:"#E0E0E5", border2:"#CCCCD4", text:"#1A1A1F", sub:"#55555F", dim:"#8A8A95" },
+};
+const ACCENT_COLORS = [
+  { name:"Gold",   hex:"#FFD600" },
+  { name:"Red",    hex:"#FF5252" },
+  { name:"Orange", hex:"#FF9800" },
+  { name:"Blue",   hex:"#2196F3" },
+  { name:"Green",  hex:"#00C853" },
+  { name:"Purple", hex:"#9C27B0" },
+  { name:"Pink",   hex:"#E91E63" },
+  { name:"Teal",   hex:"#00BCD4" },
+];
+// Re-derive every S.xxx style object's color fields from the current C values.
+// Must mirror the original S definition above — only properties that reference C.
+const recomputeS = () => {
+  S.root.background=C.bg; S.root.color=C.text;
+  S.hdr.background=C.bg; S.hdr.borderBottom=`1px solid ${C.border}`;
+  S.card.background=C.card; S.card.border=`1px solid ${C.border}`;
+  S.fBtn.background=C.card; S.fBtn.border=`1px solid ${C.border}`;
+  S.fBtnOn.border=`1px solid ${C.gold}`; S.fBtnOn.boxShadow=`0 0 10px ${C.gold}14`;
+  S.stakeW.background=C.bg; S.stakeW.border=`1px solid ${C.border}`;
+  S.stakeInp.color=C.text;
+  S.badge.color=C.dim;
+  S.btn.background=C.gold; S.btn.color=C.bg;
+  S.ghost.border=`1px solid ${C.border}`; S.ghost.color=C.sub;
+  S.tabTog.color=C.dim;
+  S.tabOn.background=C.gold; S.tabOn.color=C.bg;
+  S.inp.background=C.bg; S.inp.border=`1px solid ${C.border}`; S.inp.color=C.text;
+  S.modal.background=C.card; S.modal.border=`1px solid ${C.border}`;
+};
+const applyTheme = (bgKey, accentHex) => {
+  const preset = THEME_PRESETS[bgKey] || THEME_PRESETS.dark;
+  Object.assign(C, preset);
+  if (accentHex) C.gold = accentHex;
+  recomputeS();
+  try { localStorage.setItem("mfl_theme", JSON.stringify({ bg: bgKey, accent: C.gold })); } catch {}
+  try { window.dispatchEvent(new CustomEvent("mfl-theme-change")); } catch {}
+};
+const getSavedTheme = () => {
+  try { return JSON.parse(localStorage.getItem("mfl_theme") || "null"); } catch { return null; }
+};
+// Apply any saved theme immediately at module load — before first paint — so there's no flash
+(function bootstrapTheme(){
+  const saved = getSavedTheme();
+  if (saved) {
+    const preset = THEME_PRESETS[saved.bg] || THEME_PRESETS.dark;
+    Object.assign(C, preset);
+    if (saved.accent) C.gold = saved.accent;
+    recomputeS();
+  }
+})();
