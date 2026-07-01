@@ -1553,8 +1553,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             </div>
           </div>
           {!isAdmin&&(
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <button onClick={()=>setDepWithdrawModal("deposit")} style={{background:"none",border:`1px solid ${C.border}`,color:C.sub,borderRadius:8,padding:"7px 10px",fontSize:16,cursor:"pointer",lineHeight:1}} title="Deposit / Withdraw">💱</button>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <button onClick={()=>setDepWithdrawModal("deposit")} style={{background:"none",border:`1px solid ${C.green}55`,color:C.green,borderRadius:8,padding:"5px 10px",fontSize:14,fontWeight:900,cursor:"pointer",lineHeight:1}}>+</button>
+              <button onClick={()=>setDepWithdrawModal("withdraw")} style={{background:"none",border:"1px solid #E5393555",color:"#E53935",borderRadius:8,padding:"5px 10px",fontSize:14,fontWeight:900,cursor:"pointer",lineHeight:1}}>−</button>
               <div style={{background:C.card,border:`1px solid ${C.gold}22`,borderRadius:22,padding:"5px 14px",textAlign:"right"}}>
                 <div style={{fontSize:9,fontWeight:700,color:C.gold,letterSpacing:"0.1em"}}>BRENT BUCKS</div>
                 <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(user.balance||0).toFixed(2)}</div>
