@@ -324,14 +324,18 @@ const fetchESPN = async () => {
       const book = bookOdds?.book || (eO1?"ESPN BET":null);
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
-      // Lock odds as soon as betting closes (3 min before kickoff) — not just when live
-      // This ensures odds are frozen the moment players can no longer bet
+      // Odds lock strategy (WC):
+      // - Live/final: API drops game, use last localStorage save
+      // - Betting closed but not live: Supabase still has fresh FanDuel — prefer it over stale localStorage
+      // - Betting open: save real FanDuel to localStorage whenever available
       const bettingClosed = isClosed(e.date);
-      if(isLive || isFinal || isPostponed || bettingClosed){
+      if(isLive || isFinal || isPostponed){
         const sv=loadOdds(e.id);
         if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;}
+      } else if(bettingClosed){
+        if(bookOdds?.o1){ saveOdds(e.id,{o1,o2,oDraw}); }
+        else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
       } else {
-        // Only save real FanDuel odds — never save ESPN/fallback odds
         if(usingRealOdds&&bookOdds?.o1) saveOdds(e.id,{o1,o2,oDraw});
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
       }
@@ -463,17 +467,17 @@ const fetchMLB = async () => {
       let o2 = bookOdds?.o2 ?? null;
       const book = bookOdds?.book || null;
 
-      // Lock odds for live/final/postponed games — Odds API drops them at game time
-      // which would cause garbage fallback values to appear mid-game
+      // Odds lock strategy (MLB) — same logic as WC
+      const bettingClosed = isClosed(e.date);
       if(isLive || isFinal || isPostponed){
         const sv=loadOdds(e.id);
         if(sv){o1=sv.o1;o2=sv.o2;}
-        // If no saved odds and game already started — just show null (no odds shown)
-      } else {
-        if(usingRealOdds) saveOdds(e.id,{o1,o2});
+      } else if(bettingClosed){
+        if(bookOdds?.o1){ saveOdds(e.id,{o1,o2}); }
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;} }
-        // No fallback to calculated odds — if neither real nor saved odds exist,
-        // show null so the card displays TBD rather than garbage numbers
+      } else {
+        if(usingRealOdds&&bookOdds?.o1) saveOdds(e.id,{o1,o2});
+        else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;} }
       }
 
       const homeScore = (isLive||isFinal)?(h?.score??null):null;
@@ -1765,26 +1769,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   )}
                   {(()=>{
                     const myFighter=myGameBets[0]?.legs?.[0]?.fighter;
+                    const myBetOdds=myGameBets[0]?.legs?.[0]?.odds;
                     const isMine=t=>!pick&&myFighter===t;
+                    // Show player's locked bet-time odds on their pick — not live odds
+                    const dispO=(team,liveOdds)=>isMine(team)&&myBetOdds!=null?myBetOdds:liveOdds;
                     return(
                   <div style={{display:"flex",gap:5}}>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
                       {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
-                      <span style={{fontSize:13,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
+                      <span style={{fontSize:13,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),...(isMine("Draw")?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
                       {isMine("Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <span style={{fontSize:17}}>⚖️</span>
                       <span style={{fontSize:10,fontWeight:700,color:C.dim}}>DRAW</span>
-                      <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(g.oDraw)}</span>
+                      <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(dispO("Draw",g.oDraw))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
                       {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
-                      <span style={{fontSize:13,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
+                      <span style={{fontSize:13,fontWeight:900,color:dispO(g.t2,g.o2)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t2,g.o2))}</span>
                     </button>
                   </div>
                     );
@@ -2010,20 +2017,22 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   )}
                   {(()=>{
                     const myFighter=myGameBets[0]?.legs?.[0]?.fighter;
+                    const myBetOdds=myGameBets[0]?.legs?.[0]?.odds;
                     const isMine=t=>!pick&&myFighter===t;
+                    const dispO=(team,liveOdds)=>isMine(team)&&myBetOdds!=null?myBetOdds:liveOdds;
                     return(
                   <div style={{display:"flex",gap:8}}>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
                       {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <MLBLogo abbr={g.abbr1} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
-                      <span style={{fontSize:14,fontWeight:900,color:g.o1<0?"#FF6B35":C.green}}>{fmtO(g.o1)}</span>
+                      <span style={{fontSize:14,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
                       {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
                       <MLBLogo abbr={g.abbr2} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
-                      <span style={{fontSize:14,fontWeight:900,color:g.o2<0?"#FF6B35":C.green}}>{fmtO(g.o2)}</span>
+                      <span style={{fontSize:14,fontWeight:900,color:dispO(g.t2,g.o2)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t2,g.o2))}</span>
                     </button>
                   </div>
                     );
