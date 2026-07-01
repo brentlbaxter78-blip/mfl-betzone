@@ -114,12 +114,23 @@ const STR = {
 
 // Name normalization — handles both ESPN API and The Odds API naming
 const NAME_MAP = {
-  "United States":"USA","Korea Republic":"South Korea","Côte d'Ivoire":"Ivory Coast",
-  "DR Congo":"Congo","Czech Republic":"Czechia","Bosnia and Herzegovina":"Bosnia",
-  "Trinidad and Tobago":"Trinidad","United Arab Emirates":"UAE","China PR":"China",
-  "IR Iran":"Iran","Republic of Ireland":"Ireland","North Korea":"North Korea",
-  "Central African Republic":"CAR","São Tomé and Príncipe":"Sao Tome",
-  "Equatorial Guinea":"Eq. Guinea","Papua New Guinea":"PNG",
+  // Odds API name → normalized         // ESPN name → same normalized form
+  "United States":"USA",               "United States of America":"USA",
+  "Korea Republic":"South Korea",      "South Korea":"South Korea",
+  "Côte d'Ivoire":"Ivory Coast",       "Ivory Coast":"Ivory Coast",
+  "DR Congo":"Congo DR",               "Congo DR":"Congo DR",
+  "Czech Republic":"Czechia",
+  "Bosnia and Herzegovina":"Bosnia",   "Bosnia-Herzegovina":"Bosnia",
+  "Trinidad and Tobago":"Trinidad",
+  "United Arab Emirates":"UAE",
+  "China PR":"China",
+  "IR Iran":"Iran",
+  "Republic of Ireland":"Ireland",
+  "Central African Republic":"CAR",
+  "São Tomé and Príncipe":"Sao Tome",
+  "Equatorial Guinea":"Eq. Guinea",
+  "Papua New Guinea":"PNG",
+  "Palestine":"Palestine",             "Palestinian Territory":"Palestine",
 };
 const normName = n => NAME_MAP[n] || n;
 
@@ -200,10 +211,20 @@ const fetchBaselineOdds = async (sport) => {
 // Prefers FanDuel → DraftKings → BetMGM → Caesars → first available
 const getBookOdds = (apiGames, t1, t2) => {
   if (!apiGames?.length) return null;
-  const match = apiGames.find(g => {
+  // First try exact normalized match
+  let match = apiGames.find(g => {
     const ht = normName(g.home_team), at = normName(g.away_team);
     return (ht===t1||g.home_team===t1) && (at===t2||g.away_team===t2);
   });
+  // Fuzzy fallback: match on last significant word of each team name
+  // Catches "Bosnia-Herzegovina" vs "Bosnia and Herzegovina" type mismatches
+  if (!match) {
+    const lastWord = s => s.replace(/[-–]/g," ").trim().split(/\s+/).filter(w=>w.length>2).pop()||s;
+    match = apiGames.find(g => {
+      const ht = normName(g.home_team), at = normName(g.away_team);
+      return lastWord(ht)===lastWord(t1) && lastWord(at)===lastWord(t2);
+    });
+  }
   if (!match) return null;
   const BOOK_PREF = ["fanduel","draftkings","betmgm","caesars","williamhill_us","bovada"];
   const bm = BOOK_PREF.reduce((found,k)=>found||match.bookmakers?.find(b=>b.key===k),null)
@@ -303,14 +324,15 @@ const fetchESPN = async () => {
       const book = bookOdds?.book || (eO1?"ESPN BET":null);
       const usingRealOdds = !!(bookOdds?.o1||eO1);
 
-      // Use FanDuel/book odds directly — no extra vig added on top
-      // Knockout games still show Draw — it pays out on 90-min regulation result
-      // (same as FanDuel's h2h market — ET/pens don't count for this bet)
-      if(isLive || isFinal || isPostponed){
+      // Lock odds as soon as betting closes (3 min before kickoff) — not just when live
+      // This ensures odds are frozen the moment players can no longer bet
+      const bettingClosed = isClosed(e.date);
+      if(isLive || isFinal || isPostponed || bettingClosed){
         const sv=loadOdds(e.id);
         if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;}
       } else {
-        if(usingRealOdds) saveOdds(e.id,{o1,o2,oDraw});
+        // Only save real FanDuel odds — never save ESPN/fallback odds
+        if(usingRealOdds&&bookOdds?.o1) saveOdds(e.id,{o1,o2,oDraw});
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
       }
 
@@ -435,6 +457,7 @@ const fetchMLB = async () => {
       // NEVER use the calculated fallback (fb) for display — it generates garbage like +5000
       const bookOdds = getBookOdds(apiGames, t1, t2);
       const usingRealOdds = !!bookOdds?.o1;
+
 
       let o1 = bookOdds?.o1 ?? null;
       let o2 = bookOdds?.o2 ?? null;
@@ -1297,8 +1320,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const prev=prevOddsRef.current;
     let bigMove=false;
     for(const g of games){
-      // Never track odds moves for live or final games — API drops those lines
-      // causing garbage values that would falsely trigger auto-refresh
       if(g.isLive||g.isFinal||g.isPostponed) continue;
       const key=g.id;
       const p=prev[key];
@@ -1306,17 +1327,16 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       const fields=sport==='soccer'?['o1','o2','oDraw']:['o1','o2'];
       for(const f of fields){
         if(!g[f]||!p[f]) continue;
-        const probDiff=Math.abs(mlToProb(g[f])-mlToProb(p[f]));
-        if(probDiff>=0.05){bigMove=true;break;}
+        if(Math.abs(mlToProb(g[f])-mlToProb(p[f]))>=0.03){bigMove=true;break;}
       }
       if(bigMove) break;
     }
     games.forEach(g=>{prevOddsRef.current[g.id]={o1:g.o1,o2:g.o2,oDraw:g.oDraw};});
     if(bigMove){
       const now=Date.now();
-      if(now-lastAutoRefreshRef.current>60*60*1000){
+      if(now-lastAutoRefreshRef.current>30*60*1000){
         lastAutoRefreshRef.current=now;
-        showToast(`⚠️ Significant odds shift detected — auto-refreshing`,"error");
+        showToast("⚠️ Odds shifted — auto-refreshing","error");
         try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch(e){}
       }
     }
