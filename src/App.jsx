@@ -20,7 +20,7 @@ const sb = async (path, opts = {}) => {
 const db = {
   findUser:   u    => sb(`users?username=eq.${encodeURIComponent(u.toLowerCase().trim())}&limit=1`),
   getUser:    id   => sb(`users?id=eq.${id}&limit=1`),
-  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,created_at&order=created_at.asc`),
+  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,avatar,created_at&order=created_at.asc`),
   addUser:    d    => sb(`users`, { method:"POST", body:JSON.stringify(d) }),
   patchUser:  (id,d) => sb(`users?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
   deleteUser: id   => sb(`users?id=eq.${id}`, { method:"DELETE", prefer:"return=minimal" }),
