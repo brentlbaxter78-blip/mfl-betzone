@@ -793,7 +793,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [giftTarget,setGiftTarget]=useState(null); // {id, name}
   const [giftAmount,setGiftAmount]=useState('');
   const [gifting,setGifting]=useState(false);
-  const [depWithdrawModal,setDepWithdrawModal]=useState(null); // "deposit" | "withdraw"
+  const [depWithdrawModal,setDepWithdrawModal]=useState(null);
+  const [editingName,setEditingName]=useState(false);
+  const [newDisplayName,setNewDisplayName]=useState('');
+  const [nameLoading,setNameLoading]=useState(false); // "deposit" | "withdraw"
   const [avatarUploading,setAvatarUploading]=useState(false);
   // Compress uploaded image to 128x128 JPEG before saving to Supabase
   const compressAvatar=file=>new Promise(resolve=>{
@@ -1132,6 +1135,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
+  };
+  const nameChangeCooldownDays=7;
+  const canChangeName=()=>{
+    if(!user?.display_name_updated_at)return true;
+    const daysSince=(Date.now()-new Date(user.display_name_updated_at).getTime())/(1000*60*60*24);
+    return daysSince>=nameChangeCooldownDays;
+  };
+  const daysUntilNameChange=()=>{
+    if(!user?.display_name_updated_at)return 0;
+    const daysSince=(Date.now()-new Date(user.display_name_updated_at).getTime())/(1000*60*60*24);
+    return Math.ceil(nameChangeCooldownDays-daysSince);
+  };
+  const saveDisplayName=async()=>{
+    const trimmed=(newDisplayName||"").trim();
+    if(!trimmed||trimmed.length<1||trimmed.length>12)return showToast("Name must be 1–12 characters","error");
+    if(!canChangeName())return showToast("Can change your name again in "+daysUntilNameChange()+" day"+(daysUntilNameChange()!==1?"s":""),"error");
+    setNameLoading(true);
+    try{
+      await db.patchUser(session.userId,{display_name:trimmed,display_name_updated_at:new Date().toISOString()});
+      showToast("Display name updated ✓");
+      setEditingName(false);setNewDisplayName("");await load();
+    }catch{showToast("Error updating name","error");}
+    setNameLoading(false);
   };
   const sendGift=async()=>{
     const a=parseFloat(giftAmount);
@@ -2153,8 +2179,21 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <input type="file" accept="image/*" style={{display:"none"}} onChange={uploadAvatar} disabled={avatarUploading}/>
                 </label>
               </div>
-              <div style={{fontSize:17,fontWeight:800,color:C.text,marginBottom:2}}>{user.display_name}</div>
-              <div style={{fontSize:11,color:C.dim,marginBottom:12}}>@{user.username}</div>
+              <div style={{marginBottom:4}}>
+                {editingName
+                  ?<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"center",marginTop:4}}>
+                    <input style={{...S.inp,fontSize:14,fontWeight:700,textAlign:"center",padding:"6px 10px",maxWidth:160}} value={newDisplayName} onChange={e=>setNewDisplayName(e.target.value)} maxLength={12} autoFocus onKeyDown={e=>{if(e.key==="Enter")saveDisplayName();if(e.key==="Escape"){setEditingName(false);setNewDisplayName("");}}} placeholder={user.display_name}/>
+                    <button style={{...S.btn,padding:"6px 12px",fontSize:12}} onClick={saveDisplayName} disabled={nameLoading}>{nameLoading?"…":"Save"}</button>
+                    <button style={{...S.ghost,padding:"6px 10px",fontSize:12}} onClick={()=>{setEditingName(false);setNewDisplayName("");}}>✕</button>
+                  </div>
+                  :<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                    <div style={{fontSize:17,fontWeight:800,color:C.text}}>{user.display_name}</div>
+                    <button onClick={()=>{if(canChangeName()){setNewDisplayName(user.display_name||"");setEditingName(true);}else showToast("Can change your name again in "+daysUntilNameChange()+" day"+(daysUntilNameChange()!==1?"s":""),"error");}} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:"2px 4px"}} title={canChangeName()?"Edit display name":"Cooldown active"}>✏️</button>
+                  </div>
+                }
+              </div>
+              {editingName&&<div style={{fontSize:10,color:C.dim,marginBottom:8,marginTop:4}}>1–12 characters · 1 week cooldown</div>}
+              {!editingName&&!canChangeName()&&<div style={{fontSize:10,color:C.dim,marginBottom:6}}>⏱ Name change available in {daysUntilNameChange()} day{daysUntilNameChange()!==1?"s":""}</div>}
               <div style={{fontSize:32,fontWeight:900,color:C.gold}}>₿{(user.balance||0).toFixed(2)}</div>
               <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.12em",color:C.dim,marginTop:4}}>BRENT BUCKS · $1 = ₿1</div>
             </div>
@@ -2473,7 +2512,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",minHeight:44}}>
                         <div style={{display:"flex",alignItems:"center",gap:10,flex:1}} onClick={()=>setExpanded(open?null:p.id)}>
                           <Av name={p.display_name} avatar={p.avatar} size={38}/>
-                          <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{p.display_name}</div><div style={{fontSize:11,color:C.dim}}>@{p.username} · {pb.length} bet{pb.length!==1?"s":""}</div></div>
+                          <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{p.display_name}</div><div style={{fontSize:11,color:C.dim}}>{pb.length} bet{pb.length!==1?"s":""}</div></div>
                         </div>
                         {!isAdmin&&p.id!==session.userId&&p.username!==TEST_USER&&(
                           <button onClick={(e)=>{e.stopPropagation();setGiftTarget({id:p.id,name:p.display_name||p.username});setGiftAmount("");}} style={{...S.ghost,padding:"7px 11px",fontSize:11,marginRight:8,whiteSpace:"nowrap"}}>🎁 Gift</button>
@@ -2871,7 +2910,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",minHeight:48}} onClick={()=>setExpanded(open?null:u.id)}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
                       <Av name={u.display_name} avatar={u.avatar} size={36}/>
-                      <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{u.display_name}</div><div style={{fontSize:11,color:C.dim}}>@{u.username} · {ub.length} bet{ub.length!==1?"s":""}</div></div>
+                      <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{u.display_name}</div><div style={{fontSize:11,color:C.dim}}>{u.username} · {ub.length} bet{ub.length!==1?"s":""}</div></div>
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
                       <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:800,color:C.gold}}>₿{(u.balance||0).toFixed(2)}</div><div style={{fontSize:10,color:up>=0?C.green:"#FF5252"}}>{up>=0?"+":""}₿{up.toFixed(2)} P&L</div></div>
