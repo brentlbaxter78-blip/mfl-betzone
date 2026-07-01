@@ -19,8 +19,8 @@ const sb = async (path, opts = {}) => {
 
 const db = {
   findUser:   u    => sb(`users?username=eq.${encodeURIComponent(u.toLowerCase().trim())}&limit=1`),
-  getUser:    id   => sb(`users?id=eq.${id}&select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,avatar,created_at&limit=1`),
-  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,avatar,created_at&order=created_at.asc`),
+  getUser:    id   => sb(`users?id=eq.${id}&limit=1`),
+  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,created_at&order=created_at.asc`),
   addUser:    d    => sb(`users`, { method:"POST", body:JSON.stringify(d) }),
   patchUser:  (id,d) => sb(`users?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
   deleteUser: id   => sb(`users?id=eq.${id}`, { method:"DELETE", prefer:"return=minimal" }),
@@ -872,6 +872,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     }catch(e){showToast("Error loading","error");}finally{setLoading(false);}
     // Load monthly prize for all users (admin and player)
     try{const pr=await db.getMonthlyPrize();if(pr?.[0]?.data)setMonthlyPrize(pr[0].data);}catch{}
+    // Load avatar separately — column may not exist yet if SQL hasn't been run
+    if(!isAdmin){try{const av=await sb(`users?id=eq.${session.userId}&select=avatar&limit=1`);if(av?.[0]?.avatar!==undefined)setUser(u=>u?{...u,avatar:av[0].avatar}:u);}catch{}}
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
@@ -1417,15 +1419,16 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
 
       {/* ADMIN HOUSE P&L SUMMARY POPUP — shown when new bets have settled since last visit */}
       {adminNotifs.length>0&&(()=>{
-        // House impact: bet won → house pays out potential_win (house loses that amount)
-        //               bet lost → house keeps the stake (house gains that amount)
-        const impacts=adminNotifs.map(b=>({
+        const findP=uid=>users.find(u=>u.id===uid);
+        // Exclude test user bets — they don't affect house P&L
+        const realNotifs=adminNotifs.filter(b=>findP(b.user_id)?.username!==TEST_USER);
+        if(!realNotifs.length){dismissAdminNotifs();return null;}
+        const impacts=realNotifs.map(b=>({
           bet:b,
           impact: b.status==="won" ? -(b.potential_win||0) : b.stake,
         }));
         const netTotal=+impacts.reduce((a,x)=>a+x.impact,0).toFixed(2);
         const houseUp=netTotal>=0;
-        const findP=uid=>users.find(u=>u.id===uid);
         return(
           <div style={S.over}>
             <div style={S.modal}>
@@ -1741,11 +1744,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   })()}
                   {/* Who bet on each outcome — shows for all users and admin */}
                   {(()=>{
-                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
                     if(!gb.length)return null;
                     const betters=outcome=>gb.filter(b=>b.legs[0]?.fighter===outcome);
                     const chips=(outcome)=>betters(outcome).map(b=>{
-                      const bu=users.find(u=>u.id===b.user_id);
+                      const bu=users.find(u=>u.id===b.user_id)||(b.user_id===session.userId?user:null);
                       const payout=(b.stake+(b.potential_win||0)).toFixed(2);
                       const nm=(bu?.display_name||bu?.username||"?").split(" ")[0];
                       const sc=b.status==="won"?C.green:b.status==="lost"?"#FF5252":C.sub;
@@ -1783,7 +1786,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         <div style={{display:"flex",gap:5}}>
                           {opts.map(o=>(
                             <div key={o.k} style={{flex:o.k==="Draw"?0.72:1,textAlign:"center",padding:"5px 4px",background:C.bg,borderRadius:6,border:`1px solid ${C.border}`}}>
-                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{o.k==="Draw"?"draw":o.k.split(" ").slice(-1)[0]} wins</div>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{(()=>{if(o.k==="Draw")return"Draw wins";const w=o.k.split(" ");const l=w.slice(-2).join(" ");return(l.length<=10?l:w.slice(-1)[0])+" wins";})()}</div>
                               <div style={{fontSize:12,fontWeight:800,color:col(net(o.k))}}>{fmt(net(o.k))}</div>
                             </div>
                           ))}
@@ -1980,11 +1983,11 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   })()}
                   {/* Who bet on each outcome — shows for all users and admin */}
                   {(()=>{
-                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
                     if(!gb.length)return null;
                     const betters=outcome=>gb.filter(b=>b.legs[0]?.fighter===outcome);
                     const chips=(outcome)=>betters(outcome).map(b=>{
-                      const bu=users.find(u=>u.id===b.user_id);
+                      const bu=users.find(u=>u.id===b.user_id)||(b.user_id===session.userId?user:null);
                       const payout=(b.stake+(b.potential_win||0)).toFixed(2);
                       const nm=(bu?.display_name||bu?.username||"?").split(" ")[0];
                       const sc=b.status==="won"?C.green:b.status==="lost"?"#FF5252":C.sub;
@@ -2021,7 +2024,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         <div style={{display:"flex",gap:8}}>
                           {[{k:g.t1},{k:g.t2}].map(o=>(
                             <div key={o.k} style={{flex:1,textAlign:"center",padding:"5px 4px",background:C.bg,borderRadius:6,border:`1px solid ${C.border}`}}>
-                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{o.k.split(" ").slice(-1)[0]} wins</div>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{(()=>{const w=o.k.split(" ");const l=w.slice(-2).join(" ");return(l.length<=10?l:w.slice(-1)[0])+" wins";})()}</div>
                               <div style={{fontSize:12,fontWeight:800,color:col(net(o.k))}}>{fmt(net(o.k))}</div>
                             </div>
                           ))}
@@ -2762,8 +2765,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
 
             {/* Bet Payouts & Collections — all-time, separate from cash deposits/withdrawals */}
             {(()=>{
-              const wonBets=allBets.filter(b=>b.status==="won");
-              const lostBets=allBets.filter(b=>b.status==="lost");
+              const isTestUser=uid=>users.find(u=>u.id===uid)?.username===TEST_USER;
+              const wonBets=allBets.filter(b=>b.status==="won"&&!isTestUser(b.user_id));
+              const lostBets=allBets.filter(b=>b.status==="lost"&&!isTestUser(b.user_id));
               // House P&L per bet: WON → house only loses the profit portion (potential_win) —
               // the stake was already collected at placement so it nets to zero on a win.
               // LOST → house keeps the full stake. This matches the math in the house P&L popup.
