@@ -776,6 +776,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [giftTarget,setGiftTarget]=useState(null); // {id, name}
   const [giftAmount,setGiftAmount]=useState('');
   const [gifting,setGifting]=useState(false);
+  const [depWithdrawModal,setDepWithdrawModal]=useState(null); // "deposit" | "withdraw"
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [delConfirmText,setDelConfirmText]=useState("");
@@ -1276,6 +1277,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     {id:"requests", icon:"💵",label:`Money${pendTxs.length>0?` (${pendTxs.length})`:""}`},
     {id:"house",    icon:"💰",label:"House"},
     {id:"users",    icon:"👥",label:"Users"},
+    {id:"profile",  icon:"👤",label:"Profile"},
   ];
   const TABS=isAdmin?ADMIN_TABS:USER_TABS;
 
@@ -1481,9 +1483,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             </div>
           </div>
           {!isAdmin&&(
-            <div style={{background:C.card,border:`1px solid ${C.gold}22`,borderRadius:22,padding:"5px 14px",textAlign:"right"}}>
-              <div style={{fontSize:9,fontWeight:700,color:C.gold,letterSpacing:"0.1em"}}>BRENT BUCKS</div>
-              <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(user.balance||0).toFixed(2)}</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <button onClick={()=>setDepWithdrawModal("deposit")} style={{background:"none",border:`1px solid ${C.green}55`,color:C.green,borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Deposit</button>
+              <div style={{background:C.card,border:`1px solid ${C.gold}22`,borderRadius:22,padding:"5px 14px",textAlign:"right",cursor:"pointer"}} onClick={()=>setDepWithdrawModal("withdraw")}>
+                <div style={{fontSize:9,fontWeight:700,color:C.gold,letterSpacing:"0.1em"}}>BRENT BUCKS</div>
+                <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(user.balance||0).toFixed(2)}</div>
+              </div>
             </div>
           )}
           {isAdmin&&(
@@ -1693,7 +1698,30 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   </div>
                     );
                   })()}
-                  {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
+                  {isAdmin&&(()=>{
+                    const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+                    const net=outcome=>{
+                      const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
+                      const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
+                      return +(kept-paid).toFixed(2);
+                    };
+                    const fmt=n=>n===0?"₿0":n>0?`+₿${n.toFixed(2)}`:`-₿${Math.abs(n).toFixed(2)}`;
+                    const col=n=>n>0?C.green:n<0?"#FF5252":C.dim;
+                    const opts=g.oDraw?[{k:g.t1},{k:"Draw"},{k:g.t2}]:[{k:g.t1},{k:g.t2}];
+                    return(
+                      <div style={{marginTop:8}}>
+                        <div style={{display:"flex",gap:5}}>
+                          {opts.map(o=>(
+                            <div key={o.k} style={{flex:o.k==="Draw"?0.72:1,textAlign:"center",padding:"5px 4px",background:C.bg,borderRadius:6,border:`1px solid ${C.border}`}}>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{o.k==="Draw"?"draw":o.k.split(" ").slice(-1)[0]} wins</div>
+                              <div style={{fontSize:12,fontWeight:800,color:col(net(o.k))}}>{fmt(net(o.k))}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>House exposure · pending bets only</div>
+                      </div>
+                    );
+                  })()}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {pick&&!isAdmin&&!closed&&!isLive&&(
@@ -1880,7 +1908,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   </div>
                     );
                   })()}
-                  {isAdmin&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:8}}>Admin view — betting disabled</div>}
+                  {isAdmin&&(()=>{
+                    const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+                    const net=outcome=>{
+                      const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
+                      const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
+                      return +(kept-paid).toFixed(2);
+                    };
+                    const fmt=n=>n===0?"₿0":n>0?`+₿${n.toFixed(2)}`:`-₿${Math.abs(n).toFixed(2)}`;
+                    const col=n=>n>0?C.green:n<0?"#FF5252":C.dim;
+                    return(
+                      <div style={{marginTop:8}}>
+                        <div style={{display:"flex",gap:8}}>
+                          {[{k:g.t1},{k:g.t2}].map(o=>(
+                            <div key={o.k} style={{flex:1,textAlign:"center",padding:"5px 4px",background:C.bg,borderRadius:6,border:`1px solid ${C.border}`}}>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:2}}>{o.k.split(" ").slice(-1)[0]} wins</div>
+                              <div style={{fontSize:12,fontWeight:800,color:col(net(o.k))}}>{fmt(net(o.k))}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>House exposure · pending bets only</div>
+                      </div>
+                    );
+                  })()}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {pick&&!isAdmin&&!closed&&!isLive&&(
@@ -1989,8 +2039,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             </div>
           </div>
         )}
-        {tab==="profile"&&!isAdmin&&(
+        {tab==="profile"&&(
           <div>
+            {/* Player-only: avatar, balance, stats, visibility toggle */}
+            {!isAdmin&&(<>
             <div style={{textAlign:"center",padding:"22px 14px 18px",background:C.card,borderRadius:14,border:`1px solid ${C.border}`,marginBottom:14}}>
               <Av name={user.display_name} size={56} style={{margin:"0 auto 10px"}}/>
               <div style={{fontSize:17,fontWeight:800,color:C.text,marginBottom:2}}>{user.display_name}</div>
@@ -1999,9 +2051,17 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.12em",color:C.dim,marginTop:4}}>BRENT BUCKS · $1 = ₿1</div>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-              {[{l:"Deposited",v:`₿${(user.cash_in||0).toFixed(2)}`},{l:"P&L",v:`${pnl>=0?"+":""}₿${pnl.toFixed(2)}`,c:pnl>=0?C.green:"#FF5252"},{l:"Total Bets",v:bets.length},{l:"Wins",v:bets.filter(b=>b.status==="won").length}].map(c=>(
-                <div key={c.l} style={{...S.card,textAlign:"center"}}><div style={{fontSize:19,fontWeight:800,color:c.c||C.text,marginBottom:4}}>{c.v}</div><div style={{fontSize:10,fontWeight:600,color:C.dim,letterSpacing:"0.06em"}}>{c.l}</div></div>
-              ))}
+              {(()=>{
+                const settled=bets.filter(b=>b.status==="won"||b.status==="lost");
+                const wins=bets.filter(b=>b.status==="won").length;
+                const winPct=settled.length>0?((wins/settled.length)*100).toFixed(0):null;
+                return [{l:"P&L",v:`${pnl>=0?"+":""}₿${pnl.toFixed(2)}`,c:pnl>=0?C.green:"#FF5252"},{l:"Total Bets",v:bets.length},{l:"Wins",v:wins},{l:"Win %",v:winPct!==null?`${winPct}%`:"—",c:winPct!==null?(winPct>=50?C.green:"#FF9800"):C.dim}].map(s=>(
+                  <div key={s.l} style={{background:C.bg,borderRadius:8,padding:"10px",textAlign:"center",minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:800,color:s.c||C.text}}>{s.v}</div>
+                    <div style={{fontSize:9,color:C.dim,marginTop:2}}>{s.l}</div>
+                  </div>
+                ));
+              })()}
             </div>
             <div style={{...S.card,display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
               <div><div style={{fontSize:13,fontWeight:700,color:C.text}}>Stats Visibility</div><div style={{fontSize:11,color:C.dim,marginTop:2}}>{user.privacy_public?"Friends can see your stats":"Hidden from friends"}</div></div>
@@ -2009,6 +2069,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 {user.privacy_public?"🟢 Public":"🔴 Private"}
               </button>
             </div>
+            </>)}
             {/* Appearance / theme customization */}
             <div style={{...S.card,marginBottom:10}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setColorsOpen(o=>!o)}>
@@ -2268,30 +2329,6 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 </div>
               );
             })()}
-            <div style={{...S.card,marginBottom:10}}>
-              <div style={{fontSize:14,fontWeight:800,color:C.text,marginBottom:12}}>💵 Cash In / Withdraw</div>
-              <div style={{background:C.bg,borderRadius:10,border:`1px solid ${C.border}`,padding:"11px 13px",fontSize:12,color:C.sub,lineHeight:1.75,marginBottom:12}}>
-                <strong style={{color:C.gold}}>Deposit:</strong> Enter amount → Request → bring cash to Brent. Min $5.<br/>
-                <strong style={{color:C.gold}}>Withdraw:</strong> Minimum $10 · whole dollars only · go see Brent to collect.<br/>
-                <span style={{color:C.dim}}>$1 USD = ₿1 · Minimum bet ₿1 · No refunds on bets</span>
-              </div>
-              <div style={{...S.stakeW,marginBottom:10}}>
-                <span style={{fontSize:14,fontWeight:700,color:C.gold,marginRight:5}}>$</span>
-                <input style={S.stakeInp} type="number" placeholder="whole dollars only (min $5)" value={cash} onChange={e=>setCash(e.target.value)} min="5" step="1"/>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button style={{...S.btn,flex:1,padding:"13px"}} onClick={reqDep}>REQUEST DEPOSIT</button>
-                <button style={{...S.btn,flex:1,padding:"13px",background:"transparent",border:"1px solid #E5393555",color:"#E53935"}} onClick={reqWith}>REQUEST WITHDRAW</button>
-              </div>
-              {txs.filter(t=>t.status==="pending").length>0&&<div style={{marginTop:10,fontSize:12,color:C.gold,background:"#0D0900",borderRadius:8,padding:"8px 12px"}}>⏳ {txs.filter(t=>t.status==="pending").length} request{txs.filter(t=>t.status==="pending").length>1?"s":""} pending</div>}
-              <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`,opacity:0.5}}>
-                <div style={{fontSize:9,fontWeight:700,color:C.dim,letterSpacing:"0.1em",marginBottom:8}}>COMING SOON</div>
-                <div style={{display:"flex",alignItems:"center",gap:12,background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"11px 13px"}}>
-                  <span style={{fontSize:20}}>🍎</span>
-                  <div><div style={{fontSize:13,fontWeight:700,color:C.text}}>Apple Pay</div><div style={{fontSize:11,color:C.dim,marginTop:1}}>Instant deposits & withdrawals</div></div>
-                </div>
-              </div>
-            </div>
             {txs.length>0&&(
               <div style={{...S.card,marginBottom:10}}>
                 <RL label="TRANSACTION HISTORY"/>
@@ -2658,18 +2695,27 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         const won=b.status==="won";
                         const player=findP(b.user_id);
                         const leg=b.legs?.[0];
-                        // House P&L impact: win → just the profit paid out; loss → full stake kept
                         const amount=won?+(b.potential_win||0).toFixed(2):b.stake;
+                        const mult=b.stake>0?((b.stake+(b.potential_win||0))/b.stake).toFixed(2):"?";
                         return(
-                          <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-                            <div style={{flex:1,minWidth:0}}>
-                              <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                                {player?.display_name||player?.username||"Player"}
+                          <div key={b.id} style={{padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:12,fontWeight:700,color:C.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                                  {player?.display_name||player?.username||"Player"}
+                                </div>
+                                <div style={{fontSize:10,color:C.dim,marginTop:1}}>{betLabel(leg?.fighter)} · {fmtDate(b.placed_at)}</div>
                               </div>
-                              <div style={{fontSize:10,color:C.dim,marginTop:1}}>{betLabel(leg?.fighter)} · {fmtDate(b.placed_at)}</div>
+                              <div style={{fontSize:13,fontWeight:800,color:won?"#FF6B35":C.green,flexShrink:0,marginLeft:10}}>
+                                {won?"−":"+"}₿{amount.toFixed(2)}
+                              </div>
                             </div>
-                            <div style={{fontSize:13,fontWeight:800,color:won?"#FF6B35":C.green,flexShrink:0,marginLeft:10}}>
-                              {won?"−":"+"}₿{amount.toFixed(2)}
+                            <div style={{display:"flex",gap:10,marginTop:4,fontSize:10,color:C.dim}}>
+                              <span>Stake: <strong style={{color:C.sub}}>₿{b.stake}</strong></span>
+                              <span>·</span>
+                              <span>Mult: <strong style={{color:C.sub}}>{mult}x</strong></span>
+                              <span>·</span>
+                              <span style={{color:won?"#FF6B35":C.green,fontWeight:700}}>{won?"🏆 WON":"❌ LOST"}</span>
                             </div>
                           </div>
                         );
@@ -2849,6 +2895,36 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <button style={{...S.ghost,flex:1,padding:"13px"}} onClick={()=>setGiftTarget(null)} disabled={gifting}>Cancel</button>
               <button style={{...S.btn,flex:1,padding:"13px",background:C.green,opacity:gifting?0.6:1}} onClick={sendGift} disabled={gifting}>
                 {gifting?"Sending…":`Send ₿${giftAmount||"0"}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Deposit / Withdraw modal */}
+      {depWithdrawModal&&!isAdmin&&(
+        <div style={S.over} onClick={()=>setDepWithdrawModal(null)}>
+          <div style={S.modal} onClick={e=>e.stopPropagation()}>
+            <div style={{textAlign:"center",marginBottom:18}}>
+              <div style={{fontSize:36,marginBottom:6}}>{depWithdrawModal==="deposit"?"💵":"💸"}</div>
+              <div style={{fontSize:18,fontWeight:900,color:C.text}}>{depWithdrawModal==="deposit"?"Request Deposit":"Request Withdrawal"}</div>
+              <div style={{fontSize:11,color:C.dim,marginTop:6,lineHeight:1.7}}>
+                {depWithdrawModal==="deposit"
+                  ?<>Enter amount → Request → bring cash to Brent.<br/>Min $5 · $1 USD = ₿1</>
+                  :<>Minimum $10 · whole dollars only · go see Brent to collect.<br/>Balance: ₿{(user.balance||0).toFixed(2)}</>
+                }
+              </div>
+            </div>
+            <div style={{...S.stakeW,marginBottom:14}}>
+              <span style={{fontSize:16,fontWeight:700,color:C.gold,marginRight:6}}>$</span>
+              <input style={S.stakeInp} type="number" placeholder={depWithdrawModal==="deposit"?"min $5":"min $10"} value={cash} onChange={e=>setCash(e.target.value)} min={depWithdrawModal==="deposit"?"5":"10"} step="1" autoFocus/>
+            </div>
+            {txs.filter(t=>t.status==="pending").length>0&&(
+              <div style={{fontSize:11,color:C.gold,background:"#0D0900",borderRadius:8,padding:"8px 12px",marginBottom:12}}>⏳ {txs.filter(t=>t.status==="pending").length} request pending</div>
+            )}
+            <div style={{display:"flex",gap:8}}>
+              <button style={{...S.ghost,flex:1,padding:"13px"}} onClick={()=>setDepWithdrawModal(null)}>Cancel</button>
+              <button style={{...S.btn,flex:1,padding:"13px",background:depWithdrawModal==="deposit"?C.green:"#E53935"}} onClick={()=>{depWithdrawModal==="deposit"?reqDep():reqWith();setDepWithdrawModal(null);}}>
+                {depWithdrawModal==="deposit"?"Request Deposit":"Request Withdrawal"}
               </button>
             </div>
           </div>
