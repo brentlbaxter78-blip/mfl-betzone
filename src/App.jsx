@@ -19,8 +19,8 @@ const sb = async (path, opts = {}) => {
 
 const db = {
   findUser:   u    => sb(`users?username=eq.${encodeURIComponent(u.toLowerCase().trim())}&limit=1`),
-  getUser:    id   => sb(`users?id=eq.${id}&limit=1`),
-  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,created_at&order=created_at.asc`),
+  getUser:    id   => sb(`users?id=eq.${id}&select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,avatar,created_at&limit=1`),
+  allUsers:   ()   => sb(`users?select=id,username,display_name,balance,cash_in,cash_out,privacy_public,is_admin,avatar,created_at&order=created_at.asc`),
   addUser:    d    => sb(`users`, { method:"POST", body:JSON.stringify(d) }),
   patchUser:  (id,d) => sb(`users?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
   deleteUser: id   => sb(`users?id=eq.${id}`, { method:"DELETE", prefer:"return=minimal" }),
@@ -431,21 +431,27 @@ const fetchMLB = async () => {
       const isFinal     = state === "post";
       const isPostponed = state==="postponed"||desc.includes("postponed")||desc.includes("canceled")||desc.includes("suspended");
 
-      // Priority: Odds API (FanDuel/DraftKings) → saved pre-game odds → calculated fallback
+      // Priority: Odds API (FanDuel/DraftKings) → saved pre-game odds → null
+      // NEVER use the calculated fallback (fb) for display — it generates garbage like +5000
       const bookOdds = getBookOdds(apiGames, t1, t2);
-      const fb = mlbStableOdds(e.id, t1, t2);
       const usingRealOdds = !!bookOdds?.o1;
 
       let o1 = bookOdds?.o1 ?? null;
       let o2 = bookOdds?.o2 ?? null;
       const book = bookOdds?.book || null;
 
-      // Use FanDuel/book odds directly — no extra vig added on top
-      // Persist real odds so they survive after game ends (ESPN & Odds API both drop odds post-game)
-      if(usingRealOdds) saveOdds(e.id,{o1,o2});
-      const saved = loadOdds(e.id);
-      o1 = o1 ?? saved?.o1 ?? fb.o1;
-      o2 = o2 ?? saved?.o2 ?? fb.o2;
+      // Lock odds for live/final/postponed games — Odds API drops them at game time
+      // which would cause garbage fallback values to appear mid-game
+      if(isLive || isFinal || isPostponed){
+        const sv=loadOdds(e.id);
+        if(sv){o1=sv.o1;o2=sv.o2;}
+        // If no saved odds and game already started — just show null (no odds shown)
+      } else {
+        if(usingRealOdds) saveOdds(e.id,{o1,o2});
+        else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;} }
+        // No fallback to calculated odds — if neither real nor saved odds exist,
+        // show null so the card displays TBD rather than garbage numbers
+      }
 
       const homeScore = (isLive||isFinal)?(h?.score??null):null;
       const awayScore = (isLive||isFinal)?(a?.score??null):null;
@@ -502,7 +508,7 @@ const FB = [
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const ET = "America/New_York";
-const fmtO = o => o>0?`+${o}`:`${o}`;
+const fmtO = o => o==null?"—":o>0?`+${o}`:`${o}`;
 const calcW = (s,o) => o>0?+(s*(o/100)).toFixed(2):+(s*(100/Math.abs(o))).toFixed(2);
 const fmtDt = iso => { const d=new Date(iso); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET})+" · "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:ET,timeZoneName:"short"}); };
 const fmtDate = iso => new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",timeZone:ET});
@@ -561,6 +567,17 @@ const PATCH_NOTES = [
       "📈 Win % now shown on your stats",
       "🎨 Customize the app's look — pick a background and accent color in Profile → Appearance",
       "🔓 Betting now opens automatically as soon as new games are posted — no more fixed daily start time",
+    ],
+  },
+  {
+    id: 2,
+    version: "1.15",
+    date: "July 2026",
+    items: [
+      "🔔 Gift notifications — get a popup when someone sends you Brent Bucks, and see all recent gifts in My Bets for 24 hours",
+      "📸 Profile pictures — upload your own photo in Profile. Shows on game cards, The Group, and gift popups",
+      "👀 See who's betting on each team right on the game card — everyone's face and bet shows up under the team they picked",
+      "🔧 Bug fixes and improvements",
     ],
   },
 ];
@@ -777,6 +794,30 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [giftAmount,setGiftAmount]=useState('');
   const [gifting,setGifting]=useState(false);
   const [depWithdrawModal,setDepWithdrawModal]=useState(null); // "deposit" | "withdraw"
+  const [avatarUploading,setAvatarUploading]=useState(false);
+  // Compress uploaded image to 128x128 JPEG before saving to Supabase
+  const compressAvatar=file=>new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const sz=128,c2=document.createElement("canvas");
+      c2.width=c2.height=sz;const ctx=c2.getContext("2d");
+      const min=Math.min(img.width,img.height),sx=(img.width-min)/2,sy=(img.height-min)/2;
+      ctx.drawImage(img,sx,sy,min,min,0,0,sz,sz);
+      resolve(c2.toDataURL("image/jpeg",0.75));
+    };
+    img.src=URL.createObjectURL(file);
+  });
+  const uploadAvatar=async e=>{
+    const file=e.target.files?.[0];if(!file)return;
+    setAvatarUploading(true);
+    try{
+      const b64=await compressAvatar(file);
+      await db.patchUser(session.userId,{avatar:b64});
+      showToast("Profile picture updated ✓");await load();
+    }catch{showToast("Error uploading photo","error");}
+    setAvatarUploading(false);
+    e.target.value=""; // reset input so same file can be re-selected
+  };
   const [autoFilledIds,setAutoFilledIds]=useState(new Set());
   const [delConfirm,setDelConfirm]=useState(null);
   const [delConfirmText,setDelConfirmText]=useState("");
@@ -1484,17 +1525,17 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
           </div>
           {!isAdmin&&(
             <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <button onClick={()=>setDepWithdrawModal("deposit")} style={{background:"none",border:`1px solid ${C.green}55`,color:C.green,borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>+ Deposit</button>
-              <div style={{background:C.card,border:`1px solid ${C.gold}22`,borderRadius:22,padding:"5px 14px",textAlign:"right",cursor:"pointer"}} onClick={()=>setDepWithdrawModal("withdraw")}>
+              <button onClick={()=>setDepWithdrawModal("deposit")} style={{background:"none",border:`1px solid ${C.border}`,color:C.sub,borderRadius:8,padding:"7px 10px",fontSize:16,cursor:"pointer",lineHeight:1}} title="Deposit / Withdraw">💱</button>
+              <div style={{background:C.card,border:`1px solid ${C.gold}22`,borderRadius:22,padding:"5px 14px",textAlign:"right"}}>
                 <div style={{fontSize:9,fontWeight:700,color:C.gold,letterSpacing:"0.1em"}}>BRENT BUCKS</div>
                 <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(user.balance||0).toFixed(2)}</div>
               </div>
             </div>
           )}
           {isAdmin&&(
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:11,fontWeight:700,color:"#E53935",background:"#1A000022",border:"1px solid #E5393533",borderRadius:8,padding:"5px 12px"}}>BRENT</span>
-              <button onClick={logout} style={{background:"none",border:`1px solid ${C.border}`,color:C.dim,borderRadius:8,padding:"5px 12px",fontSize:11,fontWeight:600,cursor:"pointer"}}>Sign Out</button>
+            <div style={{background:C.card,border:`1px solid #E5393533`,borderRadius:22,padding:"5px 14px",textAlign:"right"}}>
+              <div style={{fontSize:9,fontWeight:700,color:"#E53935",letterSpacing:"0.1em"}}>HOUSE POT</div>
+              <div style={{fontSize:15,fontWeight:900,color:C.text}}>₿{(house?.balance||0).toFixed(2)}</div>
             </div>
           )}
         </div>
@@ -1698,6 +1739,35 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   </div>
                     );
                   })()}
+                  {/* Who bet on each outcome — shows for all users and admin */}
+                  {(()=>{
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                    if(!gb.length)return null;
+                    const betters=outcome=>gb.filter(b=>b.legs[0]?.fighter===outcome);
+                    const chips=(outcome)=>betters(outcome).map(b=>{
+                      const bu=users.find(u=>u.id===b.user_id);
+                      const payout=(b.stake+(b.potential_win||0)).toFixed(2);
+                      const nm=(bu?.display_name||bu?.username||"?").split(" ")[0];
+                      const sc=b.status==="won"?C.green:b.status==="lost"?"#FF5252":C.sub;
+                      return(
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:5,background:C.card,borderRadius:8,padding:"4px 7px",border:`1px solid ${b.status==="won"?C.green+"44":C.border}`,marginBottom:4}}>
+                          <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
+                          <div style={{minWidth:0,flex:1}}>
+                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}</div>
+                            <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
+                          </div>
+                        </div>
+                      );
+                    });
+                    return(
+                      <div style={{display:"flex",gap:5,marginTop:8}}>
+                        <div style={{flex:1}}>{chips(g.t1)}</div>
+                        {g.oDraw&&<div style={{flex:0.72}}>{chips("Draw")}</div>}
+                        <div style={{flex:1}}>{chips(g.t2)}</div>
+                      </div>
+                    );
+                  })()}
+
                   {isAdmin&&(()=>{
                     const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
                     const net=outcome=>{
@@ -1908,6 +1978,35 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   </div>
                     );
                   })()}
+                  {/* Who bet on each outcome — shows for all users and admin */}
+                  {(()=>{
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                    if(!gb.length)return null;
+                    const betters=outcome=>gb.filter(b=>b.legs[0]?.fighter===outcome);
+                    const chips=(outcome)=>betters(outcome).map(b=>{
+                      const bu=users.find(u=>u.id===b.user_id);
+                      const payout=(b.stake+(b.potential_win||0)).toFixed(2);
+                      const nm=(bu?.display_name||bu?.username||"?").split(" ")[0];
+                      const sc=b.status==="won"?C.green:b.status==="lost"?"#FF5252":C.sub;
+                      return(
+                        <div key={b.id} style={{display:"flex",alignItems:"center",gap:5,background:C.card,borderRadius:8,padding:"4px 7px",border:`1px solid ${b.status==="won"?C.green+"44":C.border}`,marginBottom:4}}>
+                          <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
+                          <div style={{minWidth:0,flex:1}}>
+                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}</div>
+                            <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
+                          </div>
+                        </div>
+                      );
+                    });
+                    return(
+                      <div style={{display:"flex",gap:8,marginTop:8}}>
+                        <div style={{flex:1}}>{chips(g.t1)}</div>
+                        {/* No draw in MLB */}
+                        <div style={{flex:1}}>{chips(g.t2)}</div>
+                      </div>
+                    );
+                  })()}
+
                   {isAdmin&&(()=>{
                     const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
                     const net=outcome=>{
@@ -2044,7 +2143,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {/* Player-only: avatar, balance, stats, visibility toggle */}
             {!isAdmin&&(<>
             <div style={{textAlign:"center",padding:"22px 14px 18px",background:C.card,borderRadius:14,border:`1px solid ${C.border}`,marginBottom:14}}>
-              <Av name={user.display_name} size={56} style={{margin:"0 auto 10px"}}/>
+              <div style={{position:"relative",display:"inline-block",marginBottom:10}}>
+                <Av name={user.display_name} avatar={user.avatar} size={56}/>
+                <label style={{position:"absolute",bottom:0,right:0,width:22,height:22,borderRadius:"50%",background:C.gold,border:`2px solid ${C.card}`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:11}} title="Change photo">
+                  {avatarUploading?"⏳":"📷"}
+                  <input type="file" accept="image/*" style={{display:"none"}} onChange={uploadAvatar} disabled={avatarUploading}/>
+                </label>
+              </div>
               <div style={{fontSize:17,fontWeight:800,color:C.text,marginBottom:2}}>{user.display_name}</div>
               <div style={{fontSize:11,color:C.dim,marginBottom:12}}>@{user.username}</div>
               <div style={{fontSize:32,fontWeight:900,color:C.gold}}>₿{(user.balance||0).toFixed(2)}</div>
@@ -2351,8 +2456,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 })}
               </div>
             )}
-            {/* Friends / The Group */}
-            {users.length>0&&(
+            {/* Friends / The Group — hidden for admin (Users tab has a more advanced version) */}
+            {users.length>0&&!isAdmin&&(
               <div>
                 <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:4,marginTop:4}}>The Group</div>
                 <div style={{fontSize:11,color:C.dim,marginBottom:12}}>{users.length} player{users.length!==1?"s":""} on MFL Betzone</div>
@@ -2364,7 +2469,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     <div key={p.id} style={{...S.card,marginBottom:8}}>
                       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",minHeight:44}}>
                         <div style={{display:"flex",alignItems:"center",gap:10,flex:1}} onClick={()=>setExpanded(open?null:p.id)}>
-                          <Av name={p.display_name} size={38}/>
+                          <Av name={p.display_name} avatar={p.avatar} size={38}/>
                           <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{p.display_name}</div><div style={{fontSize:11,color:C.dim}}>@{p.username} · {pb.length} bet{pb.length!==1?"s":""}</div></div>
                         </div>
                         {!isAdmin&&p.id!==session.userId&&p.username!==TEST_USER&&(
@@ -2761,7 +2866,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 <div key={u.id} style={{...S.card,marginBottom:10}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",minHeight:48}} onClick={()=>setExpanded(open?null:u.id)}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <Av name={u.display_name} size={36}/>
+                      <Av name={u.display_name} avatar={u.avatar} size={36}/>
                       <div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{u.display_name}</div><div style={{fontSize:11,color:C.dim}}>@{u.username} · {ub.length} bet{ub.length!==1?"s":""}</div></div>
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -2883,7 +2988,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         <div style={S.over} onClick={()=>!gifting&&setGiftTarget(null)}>
           <div style={S.modal} onClick={e=>e.stopPropagation()}>
             <div style={{textAlign:"center",marginBottom:18}}>
-              <div style={{fontSize:36,marginBottom:6}}>🎁</div>
+              {(()=>{const gu=users.find(u=>u.id===giftTarget.id);return<Av name={giftTarget.name} avatar={gu?.avatar} size={56} style={{margin:"0 auto 10px"}}/>;})()}
               <div style={{fontSize:18,fontWeight:800,color:C.text}}>Gift {giftTarget.name}</div>
               <div style={{fontSize:12,color:C.dim,marginTop:4}}>Your balance: ₿{(user.balance||0).toFixed(2)}</div>
             </div>
@@ -2904,18 +3009,31 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       {depWithdrawModal&&!isAdmin&&(
         <div style={S.over} onClick={()=>setDepWithdrawModal(null)}>
           <div style={S.modal} onClick={e=>e.stopPropagation()}>
-            <div style={{textAlign:"center",marginBottom:18}}>
-              <div style={{fontSize:36,marginBottom:6}}>{depWithdrawModal==="deposit"?"💵":"💸"}</div>
-              <div style={{fontSize:18,fontWeight:900,color:C.text}}>{depWithdrawModal==="deposit"?"Request Deposit":"Request Withdrawal"}</div>
-              <div style={{fontSize:11,color:C.dim,marginTop:6,lineHeight:1.7}}>
+            {/* Tab toggle */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:18}}>
+              <button onClick={()=>setDepWithdrawModal("deposit")}
+                style={{padding:"11px",borderRadius:10,border:`1px solid ${depWithdrawModal==="deposit"?C.green:C.border}`,
+                  background:depWithdrawModal==="deposit"?"#0A1A0A":C.bg,
+                  color:depWithdrawModal==="deposit"?C.green:C.dim,fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                + Deposit
+              </button>
+              <button onClick={()=>setDepWithdrawModal("withdraw")}
+                style={{padding:"11px",borderRadius:10,border:`1px solid ${depWithdrawModal==="withdraw"?"#E53935":C.border}`,
+                  background:depWithdrawModal==="withdraw"?"#1A0A0A":C.bg,
+                  color:depWithdrawModal==="withdraw"?"#E53935":C.dim,fontWeight:700,fontSize:13,cursor:"pointer"}}>
+                − Withdraw
+              </button>
+            </div>
+            <div style={{textAlign:"center",marginBottom:16}}>
+              <div style={{fontSize:12,color:C.dim,lineHeight:1.7}}>
                 {depWithdrawModal==="deposit"
                   ?<>Enter amount → Request → bring cash to Brent.<br/>Min $5 · $1 USD = ₿1</>
-                  :<>Minimum $10 · whole dollars only · go see Brent to collect.<br/>Balance: ₿{(user.balance||0).toFixed(2)}</>
+                  :<>Minimum $10 · whole dollars only · go see Brent to collect.<br/>Balance: <strong style={{color:C.gold}}>₿{(user.balance||0).toFixed(2)}</strong></>
                 }
               </div>
             </div>
             <div style={{...S.stakeW,marginBottom:14}}>
-              <span style={{fontSize:16,fontWeight:700,color:C.gold,marginRight:6}}>$</span>
+              <span style={{fontSize:16,fontWeight:700,color:depWithdrawModal==="deposit"?C.green:"#E53935",marginRight:6}}>$</span>
               <input style={S.stakeInp} type="number" placeholder={depWithdrawModal==="deposit"?"min $5":"min $10"} value={cash} onChange={e=>setCash(e.target.value)} min={depWithdrawModal==="deposit"?"5":"10"} step="1" autoFocus/>
             </div>
             {txs.filter(t=>t.status==="pending").length>0&&(
@@ -2935,7 +3053,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
 }
 
 // ─── COMPONENTS ───────────────────────────────────────────────────────────────
-const Av=({name,size=40,style={}})=><div style={{width:size,height:size,borderRadius:"50%",background:C.gold,color:C.bg,fontSize:size*0.42,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,...style}}>{name?.[0]?.toUpperCase()}</div>;
+const Av=({name,avatar,size=40,style={}})=>{
+  if(avatar)return<img src={avatar} width={size} height={size} style={{borderRadius:"50%",objectFit:"cover",flexShrink:0,display:"block",...style}}/>;
+  return<div style={{width:size,height:size,borderRadius:"50%",background:C.gold,color:C.bg,fontSize:size*0.42,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,...style}}>{name?.[0]?.toUpperCase()}</div>;
+};
 const ST=({title,sub,style={}})=><div style={{marginBottom:14,...style}}><div style={{fontSize:16,fontWeight:800,color:C.text}}>{title}</div>{sub&&<div style={{fontSize:11,color:C.dim,marginTop:2}}>{sub}</div>}</div>;
 const RL=({label,style={}})=><div style={{fontSize:9,fontWeight:700,letterSpacing:"0.12em",color:C.dim,marginBottom:8,paddingBottom:6,borderBottom:`1px solid ${C.border}`,...style}}>{label}</div>;
 const SPill=({s})=>{const m={won:["#00C85318",C.green],lost:["#E5393518","#FF5252"],cancelled:["#1A1A2A","#555"],pending:["#FFD60018",C.gold],approved:["#00C85318",C.green],rejected:["#E5393518","#FF5252"]};const[bg,c]=m[s]||["#1A1A2A","#555"];return<span style={{fontSize:9,fontWeight:700,letterSpacing:"0.07em",padding:"3px 8px",borderRadius:4,background:bg,color:c}}>{s?.toUpperCase()}</span>;};
