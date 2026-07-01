@@ -194,6 +194,7 @@ async function autoSettle() {
   const users = await sbGet("users?select=id,balance,username");
   if (!users) return { settled: 0 };
   const house = users.find(u => u.username === "__house__");
+  const testUserIds = new Set(users.filter(u => u.username === "test").map(u => u.id));
   const [wcRes, mlbRes] = await Promise.all([
     fetchFinalResults("soccer"),
     fetchFinalResults("mlb"),
@@ -211,6 +212,8 @@ async function autoSettle() {
     if (!outcome) continue;
     const updatedLegs = (bet.legs || []).map(l => ({ ...l, result: result.scoreStr }));
     await sbPatch(`bets?id=eq.${bet.id}`, { status: outcome, legs: updatedLegs });
+    // Test user bets: mark won/lost but never touch player or house balance
+    if (testUserIds.has(bet.user_id)) { settled++; continue; }
     if (outcome === "won") {
       const payout = +(bet.stake + bet.potential_win).toFixed(2);
       balanceDeltas[bet.user_id] = +((balanceDeltas[bet.user_id] || 0) + payout).toFixed(2);
