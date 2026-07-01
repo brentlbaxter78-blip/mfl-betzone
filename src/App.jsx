@@ -120,7 +120,7 @@ const NAME_MAP = {
   "Côte d'Ivoire":"Ivory Coast",       "Ivory Coast":"Ivory Coast",
   "DR Congo":"Congo DR",               "Congo DR":"Congo DR",
   "Czech Republic":"Czechia",
-  "Bosnia and Herzegovina":"Bosnia",   "Bosnia-Herzegovina":"Bosnia",
+  "Bosnia and Herzegovina":"Bosnia",   "Bosnia-Herzegovina":"Bosnia",   "Bosnia & Herzegovina":"Bosnia",
   "Trinidad and Tobago":"Trinidad",
   "United Arab Emirates":"UAE",
   "China PR":"China",
@@ -318,7 +318,7 @@ const fetchESPN = async () => {
       const usingRealOdds = !!bookOdds?.o1;
 
       // Odds lock strategy (WC):
-      // - Live/final: API drops game → use last localStorage save
+      // - Live/final: API drops game → use last localStorage save only. Show "—" if nothing saved.
       // - Betting closed, not live: FanDuel still has the game → prefer fresh, update save
       // - Betting open: save real FanDuel to localStorage whenever available
       const bettingClosed = isClosed(e.date);
