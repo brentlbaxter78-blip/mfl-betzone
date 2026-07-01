@@ -308,25 +308,18 @@ const fetchESPN = async () => {
       const notes=(e.competitions?.[0]?.notes||[]).map(n=>(n.text||'').toLowerCase()).join(' ');
       const isKnockout=/round of|knockout|quarterfinal|semifinal|\bfinal\b/i.test(notes);
 
-      // Priority: Odds API (FanDuel/DraftKings) → ESPN odds → calculated fallback
+      // FanDuel only — no ESPN BET, no synthetic fallbacks
+      // If FanDuel line not available, show "—" rather than wrong odds from another source
       const bookOdds = getBookOdds(apiGames, t1, t2);
-      const parseML = v => (v&&typeof v==="object")?(v.moneyLine??null):(v??null);
-      const espnOdds = e.competitions?.[0]?.odds?.[0];
-      const eO1 = parseML(espnOdds?.homeTeamOdds?.moneyLine??espnOdds?.moneylineHome);
-      const eO2 = parseML(espnOdds?.awayTeamOdds?.moneyLine??espnOdds?.moneylineAway);
-      const eDraw = parseML(espnOdds?.drawOdds?.moneyLine??espnOdds?.drawOdds??espnOdds?.draw?.moneyLine);
-      const fb = stableOdds(e.id, t1, t2);
-
-      let o1 = bookOdds?.o1 ?? (eO1||null) ?? fb.o1;
-      let o2 = bookOdds?.o2 ?? (eO2||null) ?? fb.o2;
-      // Knockout stage: no Draw — winner is whoever advances (incl. ET & pens)
-      let oDraw = bookOdds?.oDraw ?? (eDraw||null) ?? fb.oDraw;
-      const book = bookOdds?.book || (eO1?"ESPN BET":null);
-      const usingRealOdds = !!(bookOdds?.o1||eO1);
+      let o1 = bookOdds?.o1 ?? null;
+      let o2 = bookOdds?.o2 ?? null;
+      let oDraw = bookOdds?.oDraw ?? null;
+      const book = bookOdds?.book || null;
+      const usingRealOdds = !!bookOdds?.o1;
 
       // Odds lock strategy (WC):
-      // - Live/final: API drops game, use last localStorage save
-      // - Betting closed but not live: Supabase still has fresh FanDuel — prefer it over stale localStorage
+      // - Live/final: API drops game → use last localStorage save
+      // - Betting closed, not live: FanDuel still has the game → prefer fresh, update save
       // - Betting open: save real FanDuel to localStorage whenever available
       const bettingClosed = isClosed(e.date);
       if(isLive || isFinal || isPostponed){
@@ -336,7 +329,7 @@ const fetchESPN = async () => {
         if(bookOdds?.o1){ saveOdds(e.id,{o1,o2,oDraw}); }
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
       } else {
-        if(usingRealOdds&&bookOdds?.o1) saveOdds(e.id,{o1,o2,oDraw});
+        if(bookOdds?.o1) saveOdds(e.id,{o1,o2,oDraw});
         else { const sv=loadOdds(e.id); if(sv){o1=sv.o1;o2=sv.o2;oDraw=sv.oDraw||oDraw;} }
       }
 
@@ -1320,6 +1313,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const prevOddsRef=useRef({});
   const lastAutoRefreshRef=useRef(0);
   const mlToProb=o=>o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100);
+
+  // Fires cron when open games have no FanDuel odds yet
+  // 12-hour rate limit — max 2 triggers/day = ~120 tokens/month from auto-triggers
+  const checkMissingOdds=useCallback(async(games)=>{
+    const missing=games.some(g=>
+      !g.isLive&&!g.isFinal&&!g.isPostponed&&!isClosed(g.dt)&&
+      !g.o1&&!loadOdds(g.id)
+    );
+    if(!missing) return;
+    const now=Date.now();
+    if(now-lastAutoRefreshRef.current>12*60*60*1000){
+      lastAutoRefreshRef.current=now;
+      try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch{}
+    }
+  },[]);
+
+  // Detects 3%+ FanDuel line moves between consecutive reads — shared cooldown with above
   const checkOddsMove=useCallback(async(games,sport)=>{
     const prev=prevOddsRef.current;
     let bigMove=false;
@@ -1338,15 +1348,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     games.forEach(g=>{prevOddsRef.current[g.id]={o1:g.o1,o2:g.o2,oDraw:g.oDraw};});
     if(bigMove){
       const now=Date.now();
-      if(now-lastAutoRefreshRef.current>30*60*1000){
+      if(now-lastAutoRefreshRef.current>12*60*60*1000){
         lastAutoRefreshRef.current=now;
         showToast("⚠️ Odds shifted — auto-refreshing","error");
         try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch(e){}
       }
     }
   },[showToast]);
-  useEffect(()=>{if(wc.length)checkOddsMove(wc,'soccer');},[wc,checkOddsMove]);
-  useEffect(()=>{if(mlb.length)checkOddsMove(mlb,'mlb');},[mlb,checkOddsMove]);
+  useEffect(()=>{if(wc.length){checkOddsMove(wc,'soccer');checkMissingOdds(wc);}},[wc,checkOddsMove,checkMissingOdds]);
+  useEffect(()=>{if(mlb.length){checkOddsMove(mlb,'mlb');checkMissingOdds(mlb);}},[mlb,checkOddsMove,checkMissingOdds]);
 
   // ── Early returns (all hooks above must be declared before these) ────────────
   if(loading)return<Loader/>;
@@ -1826,7 +1836,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   })()}
 
                   {isAdmin&&(()=>{
-                    const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
                     const net=outcome=>{
                       const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
                       const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
@@ -1845,7 +1855,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                             </div>
                           ))}
                         </div>
-                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>House exposure · pending bets only</div>
+                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>{isFinal?"House result · final":isLive?"House exposure · live":"House exposure · pending bets"}</div>
                       </div>
                     );
                   })()}
@@ -2067,7 +2077,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   })()}
 
                   {isAdmin&&(()=>{
-                    const gb=allBets.filter(b=>b.status==="pending"&&b.legs?.[0]?.fightId===g.id);
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
                     const net=outcome=>{
                       const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
                       const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
@@ -2085,7 +2095,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                             </div>
                           ))}
                         </div>
-                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>House exposure · pending bets only</div>
+                        <div style={{fontSize:9,color:C.dim,textAlign:"center",marginTop:4}}>{isFinal?"House result · final":isLive?"House exposure · live":"House exposure · pending bets"}</div>
                       </div>
                     );
                   })()}
