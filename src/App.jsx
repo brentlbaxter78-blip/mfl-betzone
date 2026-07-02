@@ -615,7 +615,7 @@ const PATCH_NOTES = [
     date: "July 2026",
     items: [
       "🎰 Parlay betting is here — combine 2 or more picks from the same sport for a multiplied payout. Hit all your legs and get paid big",
-      "⚽⚾ World Cup Draw and MLB moneylines both work in parlays — mix and match any games from today",
+      "⚽⚾ Works for both sports — pick any team to win or Draw on World Cup games, pick either team on MLB games. Mix any games from today in one parlay",
       "📈 Parlays multiply your odds automatically — the more legs you add, the bigger the potential payout",
       "🔥👀💀 React to any game with an emoji — fire, eyes, or skull. See what everyone else is feeling about each matchup",
       "💬 Trash talk chat on every game card — drop a message, talk your picks, let the crew know what you think",
