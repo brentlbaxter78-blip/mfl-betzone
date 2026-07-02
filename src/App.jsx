@@ -943,6 +943,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     // Also reset parlay viewer when switching sports (MLB parlay shouldn't show on WC)
     setViewingParlayId(null);
   },[activeSport]);
+
+  // WC instant settlement — fires /api/settle-bets (zero Odds API tokens) the moment
+  // any WC game enters OT. Regulation is done = bets settle NOW, no waiting for OT/pens.
+  useEffect(()=>{
+    if(!wc.length) return;
+    const inOT=wc.filter(g=>g.isLive&&g.period&&/et|extra|ot|pen/i.test(g.period));
+    if(!inOT.length) return;
+    const key="mfl_ot_"+inOT.map(g=>g.id).sort().join("_");
+    if(localStorage.getItem(key)) return;
+    localStorage.setItem(key,"1");
+    fetch("/api/settle-bets",{method:"POST",headers:{Authorization:"Bearer mfl2026cron"}}).catch(()=>{});
+    setTimeout(()=>{refreshWC();load();},3000);
+  },[wc]);
   // Periodic bet/balance refresh — 30s keeps leaderboard and balances live
   // Also fires on tab focus so users coming back from another app see fresh data immediately
   useEffect(()=>{
