@@ -1677,16 +1677,20 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 const earliest=wc.reduce((a,b)=>new Date(a.dt)<new Date(b.dt)?a:b);
                 timerLabel=`Betting opens ${bettingOpensAt(earliest.dt)}`;
               } else if(src&&src!=="LOADING…"){
-                if(anySoon){
-                  const nextMin=(Math.floor(now.getMinutes()/15)+1)*15;
-                  const next=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours()+Math.floor(nextMin/60),nextMin%60,0,0);
-                  const m=Math.ceil((next-now)/60000);
-                  timerLabel=m>0?`Updates in ~${m}m`:"Updating…";
-                } else {
-                  const next=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours()+1,0,0,0);
-                  const m=Math.ceil((next-now)/60000);
-                  timerLabel=m>0?`Updates in ~${m}m`:"Updating…";
+                // Show actual next scheduled cron slot [10,12,15,17,19,21] ET
+                const CRON_SLOTS=[10,12,15,17,19,21];
+                const etNow=new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
+                const etH=etNow.getHours(),etM=etNow.getMinutes();
+                const etMins=etH*60+etM;
+                const nextSlotH=CRON_SLOTS.find(h=>h*60>etMins);
+                let nextLabel;
+                if(nextSlotH!=null){
+                  const minsAway=nextSlotH*60-etMins;
+                  nextLabel=minsAway<90?`~${minsAway}m`:`${nextSlotH<12?nextSlotH+" AM":(nextSlotH===12?"12 PM":(nextSlotH-12)+" PM")} ET`;
+                }else{
+                  nextLabel="10 AM ET"; // next day
                 }
+                timerLabel=`Updates at ${nextLabel}`;
               }
               return(
                 <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1989,16 +1993,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 const earliest=mlb.reduce((a,b)=>new Date(a.dt)<new Date(b.dt)?a:b);
                 timerLabel=`Betting opens ${bettingOpensAt(earliest.dt)}`;
               } else if(src&&src!=="LOADING…"){
-                if(anySoon){
-                  const nextMin=(Math.floor(now.getMinutes()/15)+1)*15;
-                  const next=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours()+Math.floor(nextMin/60),nextMin%60,0,0);
-                  const m=Math.ceil((next-now)/60000);
-                  timerLabel=m>0?`Updates in ~${m}m`:"Updating…";
-                } else {
-                  const next=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours()+1,0,0,0);
-                  const m=Math.ceil((next-now)/60000);
-                  timerLabel=m>0?`Updates in ~${m}m`:"Updating…";
+                const CRON_SLOTS=[10,12,15,17,19,21];
+                const etNow=new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
+                const etH=etNow.getHours(),etM=etNow.getMinutes();
+                const etMins=etH*60+etM;
+                const nextSlotH=CRON_SLOTS.find(h=>h*60>etMins);
+                let nextLabel;
+                if(nextSlotH!=null){
+                  const minsAway=nextSlotH*60-etMins;
+                  nextLabel=minsAway<90?`~${minsAway}m`:`${nextSlotH<12?nextSlotH+" AM":(nextSlotH===12?"12 PM":(nextSlotH-12)+" PM")} ET`;
+                }else{
+                  nextLabel="10 AM ET";
                 }
+                timerLabel=`Updates at ${nextLabel}`;
               }
               return(
                 <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
