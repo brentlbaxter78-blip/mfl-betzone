@@ -2515,7 +2515,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
           </div>
         )}
         {/* Admin live parlays feed — shown at bottom when in parlay mode */}
-        {isAdmin&&parlayMode&&(()=>{
+        {isAdmin&&parlayMode&&tab==="bet"&&(()=>{
           const sport=activeSport==="soccer"?"soccer":"mlb";
           const isParlaySport2=(b,s)=>s==="soccer"?wc.some(g=>b.legs?.some(l=>l.fightId===g.id)):mlb.some(g=>b.legs?.some(l=>l.fightId===g.id));
           const activeParlays=allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&isParlaySport2(b,sport)&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
@@ -2566,7 +2566,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         })()}
 
         {/* Community parlays feed at bottom — users see all active parlays (own + others) */}
-        {!isAdmin&&parlayMode&&(()=>{
+        {!isAdmin&&parlayMode&&tab==="bet"&&(()=>{
           const sport=activeSport==="soccer"?"soccer":"mlb";
           const isPS=(b,s)=>s==="soccer"?wc.some(g=>b.legs?.some(l=>l.fightId===g.id)):mlb.some(g=>b.legs?.some(l=>l.fightId===g.id));
           const allActive=allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&isPS(b,sport)&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
@@ -2617,7 +2617,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         })()}
 
         {/* Blank space at bottom so parlay slip never covers the last game — only in parlay mode */}
-        {parlayMode&&<div style={{height:270}}/>}
+        {parlayMode&&tab==="bet"&&<div style={{height:270}}/>}
 
         {/* ← end Bet tab */}
 
