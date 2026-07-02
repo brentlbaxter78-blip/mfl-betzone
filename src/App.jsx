@@ -880,6 +880,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [parlayPicks,setParlayPicks]=useState([]); // [{gameId,team,odds,t1,t2,sport}]
   const [parlayStake,setParlayStake]=useState('');
   const [parlayConfirm,setParlayConfirm]=useState(false);
+  const [viewingParlayId,setViewingParlayId]=useState(null);
   // Local mirror of saved theme so the UI re-renders to show the active selection
   const [themeChoice,setThemeChoice]=useState(()=>getSavedTheme()||{bg:"dark",accent:C.gold});
   const changeTheme=(bgKey,accentHex)=>{
@@ -1238,7 +1239,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     return isNaN(s)||s<=0?0:+(s*parlayMultiplier-s).toFixed(2);
   };
   const clearParlay=()=>{setParlayPicks([]);setParlayStake('');setParlayConfirm(false);};
-  const exitParlay=()=>{clearParlay();setParlayMode(false);};
+  const exitParlay=()=>{clearParlay();setParlayMode(false);setViewingParlayId(null);};
   const toggleParlayPick=(gameId,team,odds,t1,t2,sport)=>{
     if(isAdmin)return;
     setParlayPicks(prev=>{
@@ -1774,7 +1775,29 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               </div>
             )}
 
-            {/* Coming soon for inactive sports */}
+            {/* Parlay selector — shows existing pending parlays + New option */}
+            {!isAdmin&&parlayMode&&(()=>{
+              const myPendingParlays=bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1);
+              if(!myPendingParlays.length)return null;
+              return(
+                <div style={{display:"flex",gap:6,overflowX:"auto",marginBottom:10,scrollbarWidth:"none"}}>
+                  {myPendingParlays.map((p,i)=>{
+                    const active=viewingParlayId===p.id;
+                    const mult=p.stake>0?((p.stake+(p.potential_win||0))/p.stake).toFixed(2):"?";
+                    return(
+                      <button key={p.id} onClick={()=>setViewingParlayId(active?null:p.id)}
+                        style={{flexShrink:0,borderRadius:20,padding:"6px 14px",border:`2px solid ${active?"#7B2FBE":C.border}`,background:active?"#120825":C.card,color:active?"#A855F7":C.dim,fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                        🎰 Parlay {i+1} <span style={{fontSize:10,opacity:0.8}}>({mult}x · {p.legs.length}L)</span>
+                      </button>
+                    );
+                  })}
+                  <button onClick={()=>setViewingParlayId(null)}
+                    style={{flexShrink:0,borderRadius:20,padding:"6px 14px",border:`1px solid ${viewingParlayId===null?"#7B2FBE":C.border}`,background:viewingParlayId===null?"#120825":C.card,color:viewingParlayId===null?"#A855F7":C.dim,fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    + New
+                  </button>
+                </div>
+              );
+            })()}
             {["ufc","nfl","nba"].includes(activeSport)&&(
               <div style={{textAlign:"center",padding:"52px 20px"}}>
                 <div style={{fontSize:48,marginBottom:14}}>{activeSport==="ufc"?"🥊":activeSport==="nfl"?"🏈":"🏀"}</div>
@@ -1937,7 +1960,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   )}
                   {(()=>{
                     // For parlay bets, get the leg for THIS specific game (not legs[0])
-                    const myBetLeg=myGameBets[0]?.legs?.find(l=>l.fightId===g.id)||myGameBets[0]?.legs?.[0];
+                    // Only use single bets (legs.length===1) for the green ✅ highlight — parlays get purple ✓ separately
+                    const mySingleBet=myGameBets.find(b=>(b.legs?.length||0)===1);
+                    const myBetLeg=mySingleBet?.legs?.[0];
                     const myFighter=myBetLeg?.fighter;
                     const myBetOdds=myBetLeg?.odds;
                     const isMine=t=>!pick&&!parlayMode&&myFighter===t;
@@ -1945,12 +1970,16 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     // Admin: highlight winning team green after final whistle
                     const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.score.away>g.score.home?g.t2:"Draw"):null;
                     const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
-                    const parlayPick=parlayMode?parlayPicks.find(p=>p.gameId===g.id):null;
-                    const inParlay=team=>parlayPick?.team===team;
+                    // When viewing an existing parlay, highlight those picks; else show current building slip
+                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
+                    const viewedLeg=viewedParlay?.legs?.find(l=>l.fightId===g.id);
+                    const parlayPick=parlayMode?(viewedParlay?viewedLeg:parlayPicks.find(p=>p.gameId===g.id)):null;
+                    const inParlay=team=>parlayPick?.team===team||parlayPick?.fighter===team;
                     // Parlay selected: bold purple fill; not selected in parlay mode: dimmed
                     const parlayStyle={border:"2px solid #7B2FBE",background:"#120825",boxShadow:"0 0 14px #7B2FBE55"};
                     const parlayDimStyle={opacity:0.55,border:`1px solid ${C.border}`};
-                    const onTeam=(team,odds)=>{if(parlayMode&&!closed&&!isLive)toggleParlayPick(g.id,team,odds,g.t1,g.t2,"soccer");else setPick(g.id,team,odds);};
+                    // Clicking while viewing an existing parlay does nothing (read-only view)
+                    const onTeam=(team,odds)=>{if(parlayMode&&!closed&&!isLive){if(!viewingParlayId)toggleParlayPick(g.id,team,odds,g.t1,g.t2,"soccer");}else setPick(g.id,team,odds);};
 
                     return(
                   <div style={{display:"flex",gap:5}}>
@@ -2265,7 +2294,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </div>
                   )}
                   {(()=>{
-                    const myBetLeg=myGameBets[0]?.legs?.find(l=>l.fightId===g.id)||myGameBets[0]?.legs?.[0];
+                    // Only use single bets (legs.length===1) for the green ✅ highlight — parlays get purple ✓ separately
+                    const mySingleBet=myGameBets.find(b=>(b.legs?.length||0)===1);
+                    const myBetLeg=mySingleBet?.legs?.[0];
                     const myFighter=myBetLeg?.fighter;
                     const myBetOdds=myBetLeg?.odds;
                     const isMine=t=>!pick&&!parlayMode&&myFighter===t;
@@ -2273,11 +2304,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     // Admin: highlight winning team green after final
                     const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.t2):null;
                     const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
-                    const parlayPick=parlayMode?parlayPicks.find(p=>p.gameId===g.id):null;
-                    const inParlay=team=>parlayPick?.team===team;
+                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
+                    const viewedLeg=viewedParlay?.legs?.find(l=>l.fightId===g.id);
+                    const parlayPick=parlayMode?(viewedParlay?viewedLeg:parlayPicks.find(p=>p.gameId===g.id)):null;
+                    const inParlay=team=>parlayPick?.team===team||parlayPick?.fighter===team;
                     const parlayStyle={border:"2px solid #7B2FBE",background:"#120825",boxShadow:"0 0 14px #7B2FBE55"};
                     const parlayDimStyle={opacity:0.55,border:`1px solid ${C.border}`};
-                    const onTeam=(team,odds)=>{if(parlayMode&&!closed&&!isLive)toggleParlayPick(g.id,team,odds,g.t1,g.t2,"mlb");else setPick(g.id,team,odds);};
+                    const onTeam=(team,odds)=>{if(parlayMode&&!closed&&!isLive){if(!viewingParlayId)toggleParlayPick(g.id,team,odds,g.t1,g.t2,"mlb");}else setPick(g.id,team,odds);};
 
                     return(
                   <div style={{display:"flex",gap:8}}>
@@ -2446,11 +2479,41 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         {/* ← end Bet tab */}
 
       {/* ── PARLAY SLIP — sticky above nav bar ── */}
-      {parlayMode&&!isAdmin&&(
+      {parlayMode&&!isAdmin&&(()=>{
+        const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
+        const viewMult=viewedParlay&&viewedParlay.stake>0?((viewedParlay.stake+(viewedParlay.potential_win||0))/viewedParlay.stake).toFixed(2):"—";
+        const wonL=viewedParlay?.legs?.filter(l=>l._outcome==="won").length||0;
+        return(
         <div style={{position:"fixed",bottom:66,left:0,right:0,zIndex:150,padding:"0 12px 6px"}}>
-          <div style={{background:C.card,border:"1px solid #7B2FBE",borderRadius:14,padding:"12px 14px",boxShadow:"0 -4px 24px #00000066"}}>
+          <div style={{background:C.card,border:`1px solid ${viewedParlay?"#7B2FBE":"#7B2FBE"}`,borderRadius:14,padding:"12px 14px",boxShadow:"0 -4px 24px #00000066"}}>
+            {viewedParlay?(
+              // READ-ONLY VIEW of an existing parlay
+              <>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div style={{fontSize:12,fontWeight:900,color:"#A855F7"}}>🎰 PARLAY {bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1).findIndex(b=>b.id===viewingParlayId)+1} — {viewedParlay.legs.length} LEGS</div>
+                  <button onClick={()=>setViewingParlayId(null)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:11}}>✕ Close</button>
+                </div>
+                <div style={{maxHeight:120,overflowY:"auto",marginBottom:6}}>
+                {viewedParlay.legs.map((l,i)=>{
+                  const icon=l._outcome==="won"?"✅":l._outcome==="lost"?"❌":"⏳";
+                  return(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                      <span style={{fontSize:11,color:C.dim,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"55%"}}>{icon} {l.matchup}</span>
+                      <span style={{fontSize:11,fontWeight:700,color:l._outcome==="won"?C.green:l._outcome==="lost"?"#FF5252":"#A855F7"}}>{l.fighter} <span style={{color:C.dim}}>({fmtO(l.odds)})</span></span>
+                    </div>
+                  );
+                })}
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.dim,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
+                  <span>₿{viewedParlay.stake} stake · <strong style={{color:"#A855F7"}}>{viewMult}x</strong></span>
+                  <span>To win <strong style={{color:C.green}}>₿{(viewedParlay.potential_win||0).toFixed(2)}</strong></span>
+                </div>
+              </>
+            ):(
+              // BUILDING a new parlay
+              <>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div style={{fontSize:12,fontWeight:900,color:"#A855F7",letterSpacing:"0.06em"}}>🎰 PARLAY — {parlayPicks.length} LEG{parlayPicks.length!==1?"S":""}</div>
+              <div style={{fontSize:12,fontWeight:900,color:"#A855F7",letterSpacing:"0.06em"}}>🎰 NEW PARLAY — {parlayPicks.length} LEG{parlayPicks.length!==1?"S":""}</div>
               <button onClick={clearParlay} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:11}}>Clear all</button>
             </div>
             {parlayPicks.length===0&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"6px 0"}}>Tap any team to add a leg</div>}
@@ -2500,9 +2563,12 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               );
             })()}
             {parlayPicks.length===1&&<div style={{fontSize:11,color:C.dim,textAlign:"center",marginTop:6}}>Add 1 more game to complete your parlay</div>}
+            </>
+            )}
           </div>
         </div>
-      )}
+        );
+      })()}
 
         {/* ── MY BETS (user) ── */}
         {tab==="mybets"&&!isAdmin&&(
