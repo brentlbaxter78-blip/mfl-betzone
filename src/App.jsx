@@ -1265,7 +1265,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     if(noOddsLeg)return showToast(`No odds available for ${noOddsLeg.team}'s game — try another pick`,"error");
     const potential_win=parlayPotential(parlayStake);
     if(potential_win<=0||!isFinite(potential_win))return showToast("Invalid odds — please re-select your picks","error");
-    const legs=parlayPicks.map(p=>({fightId:p.gameId,fighter:p.team,odds:p.odds,matchup:`${p.t1} vs ${p.t2}`,t1:p.t1,t2:p.t2}));
+    const legs=parlayPicks.map(p=>({fightId:p.gameId,fighter:p.team,odds:p.odds,matchup:`${p.t1} vs ${p.t2}`,t1:p.t1,t2:p.t2,sport:p.sport}));
     try{
       // Use fresh balance to prevent overdraft (same pattern as single bets)
       const freshUser=(await db.getUser(session.userId))?.[0];
@@ -1780,9 +1780,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             {/* Parlay selector — always visible for users in parlay mode; admin sees all players' parlays */}
             {parlayMode&&(()=>{
               const sport=activeSport==="soccer"?"soccer":"mlb";
+              const isParlaySport=(b,s)=>s==="soccer"?wc.some(g=>b.legs?.some(l=>l.fightId===g.id)):mlb.some(g=>b.legs?.some(l=>l.fightId===g.id));
               const myPendingParlays=isAdmin
-                ?allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&b.legs[0]?.sport===sport)
-                :bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&b.legs[0]?.sport===sport);
+                ?allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&isParlaySport(b,sport))
+                :bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&isParlaySport(b,sport));
               // Admin: only show selector when there are parlays to browse
               if(isAdmin&&!myPendingParlays.length)return null;
               return(
@@ -2032,21 +2033,21 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     return(
                   <div style={{display:"flex",gap:5}}>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>onTeam(g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1&&!parlayMode?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(parlayMode&&!inParlay(g.t1)&&(!isAdmin||viewingParlayId)?parlayDimStyle:{}),...(inParlay(g.t1)?parlayStyle:{}),...(winner===g.t1?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t1&&isAdmin?"✓":"✅"}</span>}
+                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{"✅"}</span>}
                       {inParlay(g.t1)&&<span style={{position:"absolute",top:3,right:3,width:18,height:18,borderRadius:"50%",background:"#7B2FBE",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:"#fff",fontWeight:900}}>✓</span>}
                       <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:13,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>onTeam("Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"&&!parlayMode?{...S.fBtnOn,background:"#151525"}:{}),...(isMine("Draw")?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(parlayMode&&!inParlay("Draw")&&(!isAdmin||viewingParlayId)?parlayDimStyle:{}),...(inParlay("Draw")?parlayStyle:{}),...(winner==="Draw"?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {(isMine("Draw")||winner==="Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner==="Draw"&&isAdmin?"✓":"✅"}</span>}
+                      {(isMine("Draw")||winner==="Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{"✅"}</span>}
                       {inParlay("Draw")&&<span style={{position:"absolute",top:3,right:3,width:18,height:18,borderRadius:"50%",background:"#7B2FBE",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:"#fff",fontWeight:900}}>✓</span>}
                       <span style={{fontSize:17}}>⚖️</span>
                       <span style={{fontSize:10,fontWeight:700,color:C.dim}}>DRAW</span>
                       <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(dispO("Draw",g.oDraw))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>onTeam(g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2&&!parlayMode?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(parlayMode&&!inParlay(g.t2)&&(!isAdmin||viewingParlayId)?parlayDimStyle:{}),...(inParlay(g.t2)?parlayStyle:{}),...(winner===g.t2?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t2&&isAdmin?"✓":"✅"}</span>}
+                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{"✅"}</span>}
                       {inParlay(g.t2)&&<span style={{position:"absolute",top:3,right:3,width:18,height:18,borderRadius:"50%",background:"#7B2FBE",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:"#fff",fontWeight:900}}>✓</span>}
                       <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
@@ -2072,7 +2073,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
                           <div style={{minWidth:0,flex:1}}>
                             <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}{isParlay&&<span style={{fontSize:8,color:"#A855F7",marginLeft:3}}>🎰</span>}</div>
-                            <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
+                            {!parlayMode&&<div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>}
                           </div>
                         </div>
                       );
@@ -2086,8 +2087,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     );
                   })()}
 
-                  {isAdmin&&(()=>{
-                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                  {isAdmin&&!parlayMode&&(()=>{
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.length===1&&b.legs[0]?.fightId===g.id&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
                     const net=outcome=>{
                       const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
                       const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
@@ -2374,14 +2375,14 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     return(
                   <div style={{display:"flex",gap:8}}>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>onTeam(g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1&&!parlayMode?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(parlayMode&&!inParlay(g.t1)&&(!isAdmin||viewingParlayId)?parlayDimStyle:{}),...(inParlay(g.t1)?parlayStyle:{}),...(winner===g.t1?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t1&&isAdmin?"✓":"✅"}</span>}
+                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{"✅"}</span>}
                       {inParlay(g.t1)&&<span style={{position:"absolute",top:3,right:3,width:18,height:18,borderRadius:"50%",background:"#7B2FBE",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:"#fff",fontWeight:900}}>✓</span>}
                       <MLBLogo abbr={g.abbr1} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:14,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
                     <button disabled={isAdmin||closed||isLive} onClick={()=>onTeam(g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2&&!parlayMode?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(parlayMode&&!inParlay(g.t2)&&(!isAdmin||viewingParlayId)?parlayDimStyle:{}),...(inParlay(g.t2)?parlayStyle:{}),...(winner===g.t2?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t2&&isAdmin?"✓":"✅"}</span>}
+                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{"✅"}</span>}
                       {inParlay(g.t2)&&<span style={{position:"absolute",top:4,left:4,fontSize:11,color:"#A855F7",fontWeight:900}}>✓</span>}
                       <MLBLogo abbr={g.abbr2} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
@@ -2407,7 +2408,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                           <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
                           <div style={{minWidth:0,flex:1}}>
                             <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}{isParlay&&<span style={{fontSize:8,color:"#A855F7",marginLeft:3}}>🎰</span>}</div>
-                            <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
+                            {!parlayMode&&<div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>}
                           </div>
                         </div>
                       );
@@ -2421,8 +2422,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     );
                   })()}
 
-                  {isAdmin&&(()=>{
-                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.[0]?.fightId===g.id);
+                  {isAdmin&&!parlayMode&&(()=>{
+                    const gb=allBets.filter(b=>b.status!=="cancelled"&&b.legs?.length===1&&b.legs[0]?.fightId===g.id&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
                     const net=outcome=>{
                       const kept=gb.filter(b=>b.legs[0].fighter!==outcome).reduce((s,b)=>s+b.stake,0);
                       const paid=gb.filter(b=>b.legs[0].fighter===outcome).reduce((s,b)=>s+(b.potential_win||0),0);
@@ -2538,7 +2539,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         {/* Admin live parlays feed — shown at bottom when in parlay mode */}
         {isAdmin&&parlayMode&&(()=>{
           const sport=activeSport==="soccer"?"soccer":"mlb";
-          const activeParlays=allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&b.legs[0]?.sport===sport&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
+          const isParlaySport2=(b,s)=>s==="soccer"?wc.some(g=>b.legs?.some(l=>l.fightId===g.id)):mlb.some(g=>b.legs?.some(l=>l.fightId===g.id));
+          const activeParlays=allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&isParlaySport2(b,sport)&&users.find(u=>u.id===b.user_id)?.username!==TEST_USER);
           if(!activeParlays.length)return(
             <div style={{...S.card,marginTop:8,textAlign:"center",padding:"18px",opacity:0.6}}>
               <div style={{fontSize:13,color:C.dim}}>🎰 No active parlays for {sport==="soccer"?"World Cup":"MLB"} yet</div>
