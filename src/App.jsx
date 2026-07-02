@@ -1735,7 +1735,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
 
         {/* ── BET TAB — all sports in one place ── */}
         {tab==="bet"&&(
-          <div>
+          <div style={{paddingBottom:parlayMode&&parlayPicks.length>0?260:0,transition:"padding-bottom 0.2s"}}>
             {/* Sport selector — scrollable pill row, just add more sports here */}
             <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4,marginBottom:16,scrollbarWidth:"none"}}>
               {[
