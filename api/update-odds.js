@@ -264,6 +264,29 @@ async function autoSettle() {
     const h = freshHouse?.[0];
     if (h) await sbPatch(`users?id=eq.${h.id}`, { balance: +(h.balance + houseBalanceDelta).toFixed(2) });
   }
+
+  // ── Fill in remaining legs on LOST parlays ────────────────────────────────
+  // Parlay is already lost (house keeps stake) but players want to see how close
+  // they were — keep updating unsettled legs with ✅/❌ without touching status/balance
+  try {
+    const lostParlays = await sbGet(`bets?status=eq.lost&order=placed_at.desc&limit=100`);
+    const lostMultiLeg = (lostParlays || []).filter(b =>
+      (b.legs?.length || 0) > 1 && b.legs.some(l => !l._outcome)
+    );
+    for (const bet of lostMultiLeg) {
+      let changed = false;
+      const legDetails = (bet.legs || []).map(l => {
+        if (l._outcome) return l;
+        const result = allResults[l.fightId];
+        if (!result) return l;
+        const outcome = determineOutcome(l.fighter, result);
+        changed = true;
+        return { ...l, result: result.scoreStr, _outcome: outcome };
+      });
+      if (changed) await sbPatch(`bets?id=eq.${bet.id}`, { legs: legDetails });
+    }
+  } catch (e) { /* non-critical — don't fail the whole cron */ }
+
   return { settled };
 }
 
