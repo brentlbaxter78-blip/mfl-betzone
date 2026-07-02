@@ -37,6 +37,11 @@ const db = {
   patchTx:    (id,d) => sb(`transactions?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(d) }),
   getMonthlyPrize: ()=>sb(`odds_cache?id=eq.monthly_prize&select=data`),
   setMonthlyPrize: d=>sb(`odds_cache?id=eq.monthly_prize`,{method:"PATCH",body:JSON.stringify({data:d}),prefer:"return=minimal"}),
+  getReactions:  ()   => sb(`reactions?select=*`),
+  addReaction:   d    => sb(`reactions`, { method:"POST", body:JSON.stringify(d), prefer:"return=minimal" }),
+  delReaction:   (gid,uid,emoji) => sb(`reactions?game_id=eq.${gid}&user_id=eq.${uid}&emoji=eq.${encodeURIComponent(emoji)}`, { method:"DELETE", prefer:"return=minimal" }),
+  getChat:       ()   => sb(`game_chat?select=*&order=created_at.asc`),
+  addChat:       d    => sb(`game_chat`, { method:"POST", body:JSON.stringify(d), prefer:"return=minimal" }),
 };
 
 // ─── STABLE ODDS (module-level cache, resets every 2 min to match refresh) ───
@@ -818,6 +823,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [newDisplayName,setNewDisplayName]=useState('');
   const [nameLoading,setNameLoading]=useState(false); // "deposit" | "withdraw"
   const [avatarUploading,setAvatarUploading]=useState(false);
+  const [allReactions,setAllReactions]=useState([]);
+  const [allChat,setAllChat]=useState([]);
+  const [chatInput,setChatInput]=useState({}); // {gameId: text}
+  const [chatOpen,setChatOpen]=useState({}); // {gameId: bool}
   // Compress uploaded image to 128x128 JPEG before saving to Supabase
   const compressAvatar=file=>new Promise(resolve=>{
     const img=new Image();
@@ -897,6 +906,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     try{const pr=await db.getMonthlyPrize();if(pr?.[0]?.data)setMonthlyPrize(pr[0].data);}catch{}
     // Load avatar separately — column may not exist yet if SQL hasn't been run
     if(!isAdmin){try{const av=await sb(`users?id=eq.${session.userId}&select=avatar&limit=1`);if(av?.[0]?.avatar!==undefined)setUser(u=>u?{...u,avatar:av[0].avatar}:u);}catch{}}
+    // Load reactions and chat for all games
+    try{const [rx,ch]=await Promise.all([db.getReactions(),db.getChat()]);setAllReactions(rx||[]);setAllChat(ch||[]);}catch{}
   },[session.userId,isAdmin]);
 
   useEffect(()=>{load();},[load]);
@@ -1155,6 +1166,30 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       }
       showToast("Rejected","error");await load();
     }catch(e){showToast("Error","error");}
+  };
+  const REACTION_EMOJIS=["🔥","👀","💀"];
+  const toggleReaction=async(gameId,emoji)=>{
+    if(isAdmin)return;
+    const mine=allReactions.find(r=>r.game_id===gameId&&r.user_id===session.userId&&r.emoji===emoji);
+    if(mine){
+      // Optimistic remove
+      setAllReactions(r=>r.filter(x=>!(x.game_id===gameId&&x.user_id===session.userId&&x.emoji===emoji)));
+      try{await db.delReaction(gameId,session.userId,emoji);}catch{await load();}
+    }else{
+      // Optimistic add
+      const temp={id:"temp_"+Date.now(),game_id:gameId,user_id:session.userId,emoji};
+      setAllReactions(r=>[...r,temp]);
+      try{await db.addReaction({game_id:gameId,user_id:session.userId,emoji});await load();}catch{await load();}
+    }
+  };
+  const postChat=async(gameId)=>{
+    const msg=(chatInput[gameId]||"").trim();
+    if(!msg||msg.length>200)return;
+    const myName=isAdmin?"Brent":(user?.display_name||user?.username||"?");
+    const temp={id:"temp_"+Date.now(),game_id:gameId,user_id:session.userId,message:msg,created_at:new Date().toISOString(),_name:myName};
+    setAllChat(c=>[...c,temp]);
+    setChatInput(p=>({...p,[gameId]:""}));
+    try{await db.addChat({game_id:gameId,user_id:session.userId,message:msg});await load();}catch{await load();}
   };
   const nameChangeCooldownDays=7;
   const canChangeName=()=>{
@@ -1861,6 +1896,61 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   })()}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
+                  {/* Reactions + Chat */}
+                  {!isAdmin&&(()=>{
+                    const gameReactions=allReactions.filter(r=>r.game_id===g.id);
+                    const gameChat=allChat.filter(c=>c.game_id===g.id);
+                    const isChatOpen=chatOpen[g.id];
+                    return(
+                      <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <div style={{display:"flex",gap:5,flex:1}}>
+                            {REACTION_EMOJIS.map(emoji=>{
+                              const count=gameReactions.filter(r=>r.emoji===emoji).length;
+                              const mine=gameReactions.some(r=>r.emoji===emoji&&r.user_id===session.userId);
+                              return(
+                                <button key={emoji} onClick={()=>toggleReaction(g.id,emoji)}
+                                  style={{background:mine?`${C.gold}22`:C.bg,border:`1px solid ${mine?C.gold:C.border}`,borderRadius:20,padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:4,fontSize:14}}>
+                                  {emoji}{count>0&&<span style={{fontSize:11,fontWeight:700,color:mine?C.gold:C.dim}}>{count}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button onClick={()=>setChatOpen(p=>({...p,[g.id]:!p[g.id]}))}
+                            style={{background:C.bg,border:`1px solid ${isChatOpen?C.gold:C.border}`,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:11,color:isChatOpen?C.gold:C.dim,fontWeight:600}}>
+                            💬{gameChat.length>0?` ${gameChat.length}`:""}
+                          </button>
+                        </div>
+                        {isChatOpen&&(
+                          <div style={{marginTop:8}}>
+                            {gameChat.length===0&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"8px 0"}}>No trash talk yet 👀</div>}
+                            <div style={{maxHeight:160,overflowY:"auto",marginBottom:8}}>
+                              {gameChat.map(c=>{
+                                const cu=users.find(u=>u.id===c.user_id);
+                                const name=cu?.display_name||c._name||"?";
+                                return(
+                                  <div key={c.id} style={{display:"flex",gap:6,marginBottom:6,alignItems:"flex-start"}}>
+                                    <Av name={name} avatar={cu?.avatar} size={20} style={{flexShrink:0,marginTop:1}}/>
+                                    <div style={{background:C.bg,borderRadius:10,padding:"5px 9px",flex:1,minWidth:0}}>
+                                      <span style={{fontSize:10,fontWeight:700,color:C.gold}}>{name} </span>
+                                      <span style={{fontSize:11,color:C.sub}}>{c.message}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div style={{display:"flex",gap:6}}>
+                              <input style={{...S.inp,flex:1,fontSize:12,padding:"7px 10px"}} placeholder="Talk trash..." maxLength={200}
+                                value={chatInput[g.id]||""} onChange={e=>setChatInput(p=>({...p,[g.id]:e.target.value}))}
+                                onKeyDown={e=>e.key==="Enter"&&postChat(g.id)}/>
+                              <button style={{...S.btn,padding:"7px 12px",fontSize:12}} onClick={()=>postChat(g.id)}>Send</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
                       {myGameBets.length>0&&<div style={{fontSize:11,color:"#FF9800",marginBottom:8}}>⚠️ You already have a bet on this game — this adds a second separate bet</div>}
@@ -2100,6 +2190,61 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     );
                   })()}
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
+
+                  {/* Reactions + Chat */}
+                  {!isAdmin&&(()=>{
+                    const gameReactions=allReactions.filter(r=>r.game_id===g.id);
+                    const gameChat=allChat.filter(c=>c.game_id===g.id);
+                    const isChatOpen=chatOpen[g.id];
+                    return(
+                      <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <div style={{display:"flex",gap:5,flex:1}}>
+                            {REACTION_EMOJIS.map(emoji=>{
+                              const count=gameReactions.filter(r=>r.emoji===emoji).length;
+                              const mine=gameReactions.some(r=>r.emoji===emoji&&r.user_id===session.userId);
+                              return(
+                                <button key={emoji} onClick={()=>toggleReaction(g.id,emoji)}
+                                  style={{background:mine?`${C.gold}22`:C.bg,border:`1px solid ${mine?C.gold:C.border}`,borderRadius:20,padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:4,fontSize:14}}>
+                                  {emoji}{count>0&&<span style={{fontSize:11,fontWeight:700,color:mine?C.gold:C.dim}}>{count}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button onClick={()=>setChatOpen(p=>({...p,[g.id]:!p[g.id]}))}
+                            style={{background:C.bg,border:`1px solid ${isChatOpen?C.gold:C.border}`,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:11,color:isChatOpen?C.gold:C.dim,fontWeight:600}}>
+                            💬{gameChat.length>0?` ${gameChat.length}`:""}
+                          </button>
+                        </div>
+                        {isChatOpen&&(
+                          <div style={{marginTop:8}}>
+                            {gameChat.length===0&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"8px 0"}}>No trash talk yet 👀</div>}
+                            <div style={{maxHeight:160,overflowY:"auto",marginBottom:8}}>
+                              {gameChat.map(c=>{
+                                const cu=users.find(u=>u.id===c.user_id);
+                                const name=cu?.display_name||c._name||"?";
+                                return(
+                                  <div key={c.id} style={{display:"flex",gap:6,marginBottom:6,alignItems:"flex-start"}}>
+                                    <Av name={name} avatar={cu?.avatar} size={20} style={{flexShrink:0,marginTop:1}}/>
+                                    <div style={{background:C.bg,borderRadius:10,padding:"5px 9px",flex:1,minWidth:0}}>
+                                      <span style={{fontSize:10,fontWeight:700,color:C.gold}}>{name} </span>
+                                      <span style={{fontSize:11,color:C.sub}}>{c.message}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div style={{display:"flex",gap:6}}>
+                              <input style={{...S.inp,flex:1,fontSize:12,padding:"7px 10px"}} placeholder="Talk trash..." maxLength={200}
+                                value={chatInput[g.id]||""} onChange={e=>setChatInput(p=>({...p,[g.id]:e.target.value}))}
+                                onKeyDown={e=>e.key==="Enter"&&postChat(g.id)}/>
+                              <button style={{...S.btn,padding:"7px 12px",fontSize:12}} onClick={()=>postChat(g.id)}>Send</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {pick&&!isAdmin&&!closed&&!isLive&&(
                     <div style={{marginTop:12,background:C.bg,borderRadius:10,border:`1px solid ${C.gold}22`,padding:"12px"}}>
