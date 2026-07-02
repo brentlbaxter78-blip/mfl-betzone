@@ -204,6 +204,38 @@ async function autoSettle() {
   let houseBalanceDelta = 0;
   let settled = 0;
   for (const bet of pending) {
+
+    // ── PARLAY (2+ legs) ──────────────────────────────────────────────────────
+    if ((bet.legs?.length || 0) > 1) {
+      let anyLost = false, allWon = true;
+      const legDetails = (bet.legs || []).map(l => {
+        if (l._outcome) { if (l._outcome !== 'won') allWon = false; return l; } // already settled
+        const result = allResults[l.fightId];
+        if (!result) { allWon = false; return l; }
+        const outcome = determineOutcome(l.fighter, result);
+        if (outcome === 'lost') anyLost = true;
+        if (outcome !== 'won') allWon = false;
+        return { ...l, result: result.scoreStr, _outcome: outcome };
+      });
+      if (anyLost) {
+        await sbPatch(`bets?id=eq.${bet.id}`, { status: 'lost', legs: legDetails });
+        settled++;
+      } else if (allWon) {
+        if (!testUserIds.has(bet.user_id)) {
+          const payout = +(bet.stake + (bet.potential_win || 0)).toFixed(2);
+          balanceDeltas[bet.user_id] = +((balanceDeltas[bet.user_id] || 0) + payout).toFixed(2);
+          houseBalanceDelta = +(houseBalanceDelta - payout).toFixed(2);
+        }
+        await sbPatch(`bets?id=eq.${bet.id}`, { status: 'won', legs: legDetails });
+        settled++;
+      } else {
+        // Partial progress — update legs so UI shows which have settled
+        await sbPatch(`bets?id=eq.${bet.id}`, { legs: legDetails });
+      }
+      continue;
+    }
+
+    // ── SINGLE BET (1 leg) ────────────────────────────────────────────────────
     const leg = bet.legs?.[0];
     if (!leg?.fightId) continue;
     const result = allResults[leg.fightId];
