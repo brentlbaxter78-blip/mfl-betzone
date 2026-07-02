@@ -1349,22 +1349,9 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const lastAutoRefreshRef=useRef(0);
   const mlToProb=o=>o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100);
 
-  // Fires cron when open games have no FanDuel odds yet
-  // 12-hour rate limit — max 2 triggers/day = ~120 tokens/month from auto-triggers
-  const checkMissingOdds=useCallback(async(games)=>{
-    const missing=games.some(g=>
-      !g.isLive&&!g.isFinal&&!g.isPostponed&&!isClosed(g.dt)&&
-      !g.o1&&!loadOdds(g.id)
-    );
-    if(!missing) return;
-    const now=Date.now();
-    if(now-lastAutoRefreshRef.current>12*60*60*1000){
-      lastAutoRefreshRef.current=now;
-      try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch{}
-    }
-  },[]);
-
-  // Detects 3%+ FanDuel line moves between consecutive reads — shared cooldown with above
+  // Auto-refresh when FanDuel line moves >10% probability — uses localStorage so cooldown
+  // persists across page reloads and is shared across all users (prevents pile-on triggers)
+  // 12-hour cooldown = at most 2 extra tokens/day on top of the 12 from the scheduled cron
   const checkOddsMove=useCallback(async(games,sport)=>{
     const prev=prevOddsRef.current;
     let bigMove=false;
@@ -1376,22 +1363,26 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       const fields=sport==='soccer'?['o1','o2','oDraw']:['o1','o2'];
       for(const f of fields){
         if(!g[f]||!p[f]) continue;
-        if(Math.abs(mlToProb(g[f])-mlToProb(p[f]))>=0.03){bigMove=true;break;}
+        if(Math.abs(mlToProb(g[f])-mlToProb(p[f]))>=0.10){bigMove=true;break;}
       }
       if(bigMove) break;
     }
     games.forEach(g=>{prevOddsRef.current[g.id]={o1:g.o1,o2:g.o2,oDraw:g.oDraw};});
     if(bigMove){
-      const now=Date.now();
-      if(now-lastAutoRefreshRef.current>12*60*60*1000){
-        lastAutoRefreshRef.current=now;
-        showToast("⚠️ Odds shifted — auto-refreshing","error");
-        try{ await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}}); }catch(e){}
-      }
+      try{
+        const lastStr=localStorage.getItem("mfl_last_auto_refresh");
+        const last=lastStr?parseInt(lastStr,10):0;
+        const now=Date.now();
+        if(now-last>12*60*60*1000){
+          localStorage.setItem("mfl_last_auto_refresh",String(now));
+          showToast("⚠️ Odds shifted — auto-refreshing","error");
+          await fetch("/api/update-odds",{headers:{Authorization:"Bearer mfl2026cron"}});
+        }
+      }catch(e){}
     }
   },[showToast]);
-  useEffect(()=>{if(wc.length){checkOddsMove(wc,'soccer');checkMissingOdds(wc);}},[wc,checkOddsMove,checkMissingOdds]);
-  useEffect(()=>{if(mlb.length){checkOddsMove(mlb,'mlb');checkMissingOdds(mlb);}},[mlb,checkOddsMove,checkMissingOdds]);
+  useEffect(()=>{if(wc.length)checkOddsMove(wc,'soccer');},[wc,checkOddsMove]);
+  useEffect(()=>{if(mlb.length)checkOddsMove(mlb,'mlb');},[mlb,checkOddsMove]);
 
   // ── Early returns (all hooks above must be declared before these) ────────────
   if(loading)return<Loader/>;
