@@ -1256,22 +1256,28 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
     const allGames=[...wc,...mlb];
     const invalidLeg=parlayPicks.find(p=>{const g=allGames.find(g2=>g2.id===p.gameId);return g&&(isClosed(g.dt)||g.isLive||g.isFinal);});
     if(invalidLeg)return showToast(`Betting closed for ${invalidLeg.team}'s game`,"error");
+    // Validate all picks have real odds (null odds = no FanDuel line available)
+    const noOddsLeg=parlayPicks.find(p=>!p.odds||p.odds===null);
+    if(noOddsLeg)return showToast(`No odds available for ${noOddsLeg.team}'s game — try another pick`,"error");
     const potential_win=parlayPotential(parlayStake);
+    if(potential_win<=0||!isFinite(potential_win))return showToast("Invalid odds — please re-select your picks","error");
     const legs=parlayPicks.map(p=>({fightId:p.gameId,fighter:p.team,odds:p.odds,matchup:`${p.t1} vs ${p.t2}`,t1:p.t1,t2:p.t2}));
     try{
       // Use fresh balance to prevent overdraft (same pattern as single bets)
       const freshUser=(await db.getUser(session.userId))?.[0];
       if(!freshUser)return showToast("Error loading balance","error");
       if(stake>freshUser.balance)return showToast("Not enough balance","error");
-      await db.addBet({user_id:session.userId,stake,potential_win,status:'pending',placed_at:new Date().toISOString(),legs});
+      await db.addBet({user_id:session.userId,type:"parlay",stake,potential_win,status:'pending',placed_at:new Date().toISOString(),legs});
       // Deduct from player using fresh balance
       await db.patchUser(session.userId,{balance:+(freshUser.balance-stake).toFixed(2)});
-      // Add stake to house (same as single bet — house holds stakes until settlement)
-      if(house){const freshHouse=(await db.getUser(house.id))?.[0];if(freshHouse)await db.patchUser(house.id,{balance:+(freshHouse.balance+stake).toFixed(2)});}
+      // Add stake to house — fetch fresh since players don't load house in state
+      const freshHouseRes=await db.getHouse();
+      const freshHouse=freshHouseRes?.[0];
+      if(freshHouse)await db.patchUser(freshHouse.id,{balance:+(freshHouse.balance+stake).toFixed(2)});
       exitParlay();
       showToast(`🎰 Parlay placed! ₿${stake} to win ₿${potential_win}`);
       await load();
-    }catch{showToast("Error placing parlay","error");}
+    }catch(e){console.error("Parlay error:",e);showToast("Error placing parlay","error");}
   };
 
   const nameChangeCooldownDays=7;
@@ -2440,6 +2446,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               <button onClick={clearParlay} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:11}}>Clear all</button>
             </div>
             {parlayPicks.length===0&&<div style={{fontSize:11,color:C.dim,textAlign:"center",padding:"6px 0"}}>Tap any team to add a leg</div>}
+            <div style={{maxHeight:120,overflowY:"auto",marginBottom:parlayPicks.length>0?4:0}}>
             {parlayPicks.map(p=>(
               <div key={p.gameId} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                 <div style={{fontSize:11,color:C.sub,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"60%"}}>{p.t1} vs {p.t2}</div>
@@ -2449,6 +2456,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 </div>
               </div>
             ))}
+            </div>
             {parlayPicks.length>=2&&(()=>{
               const pStake=parseFloat(parlayStake)||0;
               const toWin=parlayPotential(parlayStake);
