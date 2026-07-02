@@ -940,6 +940,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       const sport=activeSport==="soccer"?"soccer":"mlb";
       setParlayPicks(p=>p.filter(pk=>pk.sport===sport));
     }
+    // Also reset parlay viewer when switching sports (MLB parlay shouldn't show on WC)
+    setViewingParlayId(null);
   },[activeSport]);
   // Periodic bet/balance refresh — 30s keeps leaderboard and balances live
   // Also fires on tab focus so users coming back from another app see fresh data immediately
@@ -1761,8 +1763,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 </button>
               ))}
             </div>
-            {/* Single / Parlay toggle */}
-            {!isAdmin&&["soccer","mlb"].includes(activeSport)&&(
+            {/* Single / Parlay toggle — available to both players and admin */}
+            {["soccer","mlb"].includes(activeSport)&&(
               <div style={{display:"flex",gap:6,marginBottom:14,background:C.bg,borderRadius:12,padding:4}}>
                 <button onClick={exitParlay}
                   style={{flex:1,padding:"9px",borderRadius:9,border:"none",background:!parlayMode?C.card:"none",color:!parlayMode?C.text:C.dim,fontWeight:700,fontSize:13,cursor:"pointer",boxShadow:!parlayMode?`0 1px 4px #0004`:"none"}}>
@@ -1775,26 +1777,55 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
               </div>
             )}
 
-            {/* Parlay selector — shows existing pending parlays + New option */}
-            {!isAdmin&&parlayMode&&(()=>{
-              const myPendingParlays=bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1);
+            {/* Parlay selector — shows pending parlays for this sport; admin sees all users' parlays */}
+            {parlayMode&&(()=>{
+              const sport=activeSport==="soccer"?"soccer":"mlb";
+              const myPendingParlays=isAdmin
+                ?allBets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&b.legs[0]?.sport===sport)
+                :bets.filter(b=>b.status==="pending"&&(b.legs?.length||0)>1&&b.legs[0]?.sport===sport);
               if(!myPendingParlays.length)return null;
               return(
                 <div style={{display:"flex",gap:6,overflowX:"auto",marginBottom:10,scrollbarWidth:"none"}}>
                   {myPendingParlays.map((p,i)=>{
                     const active=viewingParlayId===p.id;
                     const mult=p.stake>0?((p.stake+(p.potential_win||0))/p.stake).toFixed(2):"?";
+                    const owner=isAdmin?users.find(u=>u.id===p.user_id):null;
                     return(
                       <button key={p.id} onClick={()=>setViewingParlayId(active?null:p.id)}
                         style={{flexShrink:0,borderRadius:20,padding:"6px 14px",border:`2px solid ${active?"#7B2FBE":C.border}`,background:active?"#120825":C.card,color:active?"#A855F7":C.dim,fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
-                        🎰 Parlay {i+1} <span style={{fontSize:10,opacity:0.8}}>({mult}x · {p.legs.length}L)</span>
+                        🎰 {isAdmin?(owner?.display_name||"?"):`Parlay ${i+1}`} <span style={{fontSize:10,opacity:0.8}}>({mult}x · {p.legs.length}L)</span>
                       </button>
                     );
                   })}
-                  <button onClick={()=>setViewingParlayId(null)}
+                  {!isAdmin&&<button onClick={()=>setViewingParlayId(null)}
                     style={{flexShrink:0,borderRadius:20,padding:"6px 14px",border:`1px solid ${viewingParlayId===null?"#7B2FBE":C.border}`,background:viewingParlayId===null?"#120825":C.card,color:viewingParlayId===null?"#A855F7":C.dim,fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                     + New
-                  </button>
+                  </button>}
+                </div>
+              );
+            })()}
+            {/* Admin: inline summary of viewed parlay */}
+            {isAdmin&&parlayMode&&viewingParlayId&&(()=>{
+              const vp=allBets.find(b=>b.id===viewingParlayId);
+              if(!vp)return null;
+              const owner=users.find(u=>u.id===vp.user_id);
+              const mult=vp.stake>0?((vp.stake+(vp.potential_win||0))/vp.stake).toFixed(2):"?";
+              return(
+                <div style={{...S.card,marginBottom:10,border:"1px solid #7B2FBE44",background:"#0D0520"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Av name={owner?.display_name} avatar={owner?.avatar} size={22}/>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:800,color:"#A855F7"}}>{owner?.display_name||"?"}'s Parlay</div>
+                        <div style={{fontSize:10,color:C.dim}}>{vp.legs.length} legs · {mult}x · ₿{vp.stake} to win ₿{(vp.potential_win||0).toFixed(2)}</div>
+                      </div>
+                    </div>
+                    <SPill s={vp.status}/>
+                  </div>
+                  {vp.legs.map((l,i)=>{
+                    const icon=l._outcome==="won"?"✅":l._outcome==="lost"?"❌":"⏳";
+                    return<div key={i} style={{fontSize:10,color:C.dim,marginBottom:2}}>{icon} <strong style={{color:l._outcome==="won"?C.green:l._outcome==="lost"?"#FF5252":"#A855F7"}}>{l.fighter}</strong> — {l.matchup} ({fmtO(l.odds)})</div>;
+                  })}
                 </div>
               );
             })()}
@@ -1857,8 +1888,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             :wc.map(g=>{
               const pick=picks[g.id];
               const allMyGameBets=bets.filter(b=>b.legs?.some(l=>l.fightId===g.id));
-              const myGameBets=allMyGameBets.filter(b=>b.status==="pending");
-              const mySettledBets=allMyGameBets.filter(b=>b.status==="won"||b.status==="lost");
+              const myGameBets=allMyGameBets.filter(b=>b.status==="pending"&&((parlayMode?(b.legs?.length||0)>1:(b.legs?.length||0)===1)));
+              const mySettledBets=allMyGameBets.filter(b=>(b.status==="won"||b.status==="lost")&&((parlayMode?(b.legs?.length||0)>1:(b.legs?.length||0)===1)));
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -1885,18 +1916,28 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </div>
                   </div>
                   {/* Win/loss result — appears when bet is auto-settled or settled by admin */}
-                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>(
-                    <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
-                      <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
-                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
-                        <Flag team={b.legs?.[0]?.fighter} size={15}/>
-                        <span style={{color:C.sub}}>{b.legs?.[0]?.fighter}</span>
-                        <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
-                        <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>{
+                    const isP=(b.legs?.length||0)>1;
+                    const gl=b.legs?.find(l=>l.fightId===g.id)||b.legs?.[0];
+                    const won=b.status==="won";
+                    return(
+                    <div key={b.id} style={{background:won?(isP?"#0A0A18":"#0A1A0A"):"#1A0A0A",border:`1px solid ${won?(isP?"#7B2FBE":C.green):"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+                      <div style={{fontSize:13,fontWeight:800,color:won?(isP?"#A855F7":C.green):"#E53935",marginBottom:5}}>
+                        {won?(isP?"🎰 PARLAY HIT!":"🏆 YOU WON!"):(isP?"💔 PARLAY MISS":"❌ YOU LOST")}
                       </div>
-                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
+                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                        <Flag team={gl?.fighter} size={15}/>
+                        <span style={{color:C.sub}}>{gl?.fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(gl?.odds)})</span>
+                        {isP&&<span style={{fontSize:10,color:"#A855F7",fontWeight:600}}>· {b.legs.length} legs</span>}
+                        <span style={{fontWeight:800,fontSize:14,color:won?(isP?"#A855F7":C.green):"#E53935",marginLeft:4}}>{won?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                      </div>
+                      {gl?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {gl.result}</div>}
+                      {isP&&won&&<div style={{fontSize:10,color:"#A855F7",marginTop:4}}>All {b.legs.length} legs hit 🎉</div>}
+                      {isP&&!won&&<div style={{fontSize:10,color:C.dim,marginTop:4}}>{b.legs.filter(l=>l._outcome==="won").length}/{b.legs.length} legs won</div>}
                     </div>
-                  ))}
+                    );
+                  })}
                   {/* Bet summary bar — always visible at top when user has a pending bet on this game */}
                   {myGameBets.length>0&&!isAdmin&&(
                     <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"10px 14px",marginBottom:10}}>
@@ -1971,14 +2012,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.score.away>g.score.home?g.t2:"Draw"):null;
                     const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
                     // When viewing an existing parlay, highlight those picks; else show current building slip
-                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
+                    // Only highlight viewed parlay if it's a soccer parlay
+                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId&&b.legs?.[0]?.sport==="soccer"):null;
                     const viewedLeg=viewedParlay?.legs?.find(l=>l.fightId===g.id);
                     const parlayPick=parlayMode?(viewedParlay?viewedLeg:parlayPicks.find(p=>p.gameId===g.id)):null;
                     const inParlay=team=>parlayPick?.team===team||parlayPick?.fighter===team;
-                    // Parlay selected: bold purple fill; not selected in parlay mode: dimmed
                     const parlayStyle={border:"2px solid #7B2FBE",background:"#120825",boxShadow:"0 0 14px #7B2FBE55"};
                     const parlayDimStyle={opacity:0.55,border:`1px solid ${C.border}`};
-                    // Clicking while viewing an existing parlay does nothing (read-only view)
                     const onTeam=(team,odds)=>{if(parlayMode&&!closed&&!isLive){if(!viewingParlayId)toggleParlayPick(g.id,team,odds,g.t1,g.t2,"soccer");}else setPick(g.id,team,odds);};
 
                     return(
@@ -2023,7 +2063,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         <div key={b.id} style={{display:"flex",alignItems:"center",gap:5,background:C.card,borderRadius:8,padding:"4px 7px",border:`1px solid ${b.status==="won"?C.green+"44":C.border}`,marginBottom:4}}>
                           <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
                           <div style={{minWidth:0,flex:1}}>
-                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}</div>
+                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}{isParlay&&<span style={{fontSize:8,color:"#A855F7",marginLeft:3}}>🎰</span>}</div>
                             <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
                           </div>
                         </div>
@@ -2200,8 +2240,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
             :mlb.map(g=>{
               const pick=picks[g.id];
               const allMyGameBets=bets.filter(b=>b.legs?.some(l=>l.fightId===g.id));
-              const myGameBets=allMyGameBets.filter(b=>b.status==="pending");
-              const mySettledBets=allMyGameBets.filter(b=>b.status==="won"||b.status==="lost");
+              const myGameBets=allMyGameBets.filter(b=>b.status==="pending"&&((parlayMode?(b.legs?.length||0)>1:(b.legs?.length||0)===1)));
+              const mySettledBets=allMyGameBets.filter(b=>(b.status==="won"||b.status==="lost")&&((parlayMode?(b.legs?.length||0)>1:(b.legs?.length||0)===1)));
               const stake=parseFloat(pick?.stake)||0;
               const payout=stake&&pick?calcW(stake,pick.odds):0;
               const closed=isClosed(g.dt);
@@ -2228,18 +2268,28 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     </div>
                   </div>
                   {/* Win/loss result */}
-                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>(
-                    <div key={b.id} style={{background:b.status==="won"?"#0A1A0A":"#1A0A0A",border:`1px solid ${b.status==="won"?C.green:"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
-                      <div style={{fontSize:13,fontWeight:800,color:b.status==="won"?C.green:"#E53935",marginBottom:5}}>{b.status==="won"?"🏆 YOU WON!":"❌ YOU LOST"}</div>
-                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
-                        <MLBLogo abbr={b.legs?.[0]?.fighter===g.t1?g.abbr1:g.abbr2} size={15}/>
-                        <span style={{color:C.sub}}>{b.legs?.[0]?.fighter}</span>
-                        <span style={{color:C.dim}}>({fmtO(b.legs?.[0]?.odds)})</span>
-                        <span style={{fontWeight:800,fontSize:14,color:b.status==="won"?C.green:"#E53935",marginLeft:4}}>{b.status==="won"?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                  {mySettledBets.length>0&&!isAdmin&&mySettledBets.map(b=>{
+                    const isP=(b.legs?.length||0)>1;
+                    const gl=b.legs?.find(l=>l.fightId===g.id)||b.legs?.[0];
+                    const won=b.status==="won";
+                    return(
+                    <div key={b.id} style={{background:won?(isP?"#0A0A18":"#0A1A0A"):"#1A0A0A",border:`1px solid ${won?(isP?"#7B2FBE":C.green):"#E53935"}55`,borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+                      <div style={{fontSize:13,fontWeight:800,color:won?(isP?"#A855F7":C.green):"#E53935",marginBottom:5}}>
+                        {won?(isP?"🎰 PARLAY HIT!":"🏆 YOU WON!"):(isP?"💔 PARLAY MISS":"❌ YOU LOST")}
                       </div>
-                      {b.legs[0]?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {b.legs?.[0]?.result}</div>}
+                      <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,flexWrap:"wrap"}}>
+                        <MLBLogo abbr={gl?.fighter===g.t1?g.abbr1:g.abbr2} size={15}/>
+                        <span style={{color:C.sub}}>{gl?.fighter}</span>
+                        <span style={{color:C.dim}}>({fmtO(gl?.odds)})</span>
+                        {isP&&<span style={{fontSize:10,color:"#A855F7",fontWeight:600}}>· {b.legs.length} legs</span>}
+                        <span style={{fontWeight:800,fontSize:14,color:won?(isP?"#A855F7":C.green):"#E53935",marginLeft:4}}>{won?`+₿${(b.potential_win||0).toFixed(2)}`:`−₿${b.stake}`}</span>
+                      </div>
+                      {gl?.result&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Final: {gl.result}</div>}
+                      {isP&&won&&<div style={{fontSize:10,color:"#A855F7",marginTop:4}}>All {b.legs.length} legs hit 🎉</div>}
+                      {isP&&!won&&<div style={{fontSize:10,color:C.dim,marginTop:4}}>{b.legs.filter(l=>l._outcome==="won").length}/{b.legs.length} legs won</div>}
                     </div>
-                  ))}
+                    );
+                  })}
                   {/* Bet summary bar — always visible at top when user has a pending bet on this game */}
                   {myGameBets.length>0&&!isAdmin&&(
                     <div style={{background:"#0A1A0A",border:`1px solid ${C.green}44`,borderRadius:10,padding:"10px 14px",marginBottom:10}}>
@@ -2304,7 +2354,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     // Admin: highlight winning team green after final
                     const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.t2):null;
                     const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
-                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
+                    // Only highlight viewed parlay if it's an MLB parlay
+                    const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId&&b.legs?.[0]?.sport==="mlb"):null;
                     const viewedLeg=viewedParlay?.legs?.find(l=>l.fightId===g.id);
                     const parlayPick=parlayMode?(viewedParlay?viewedLeg:parlayPicks.find(p=>p.gameId===g.id)):null;
                     const inParlay=team=>parlayPick?.team===team||parlayPick?.fighter===team;
@@ -2347,7 +2398,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                         <div key={b.id} style={{display:"flex",alignItems:"center",gap:5,background:C.card,borderRadius:8,padding:"4px 7px",border:`1px solid ${b.status==="won"?C.green+"44":C.border}`,marginBottom:4}}>
                           <Av name={bu?.display_name} avatar={bu?.avatar} size={20}/>
                           <div style={{minWidth:0,flex:1}}>
-                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}</div>
+                            <div style={{fontSize:10,fontWeight:700,color:sc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{nm}{isParlay&&<span style={{fontSize:8,color:"#A855F7",marginLeft:3}}>🎰</span>}</div>
                             <div style={{fontSize:8,color:C.dim}}>₿{b.stake}→₿{payout}</div>
                           </div>
                         </div>
@@ -2479,7 +2530,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         {/* ← end Bet tab */}
 
       {/* ── PARLAY SLIP — sticky above nav bar ── */}
-      {parlayMode&&!isAdmin&&(()=>{
+      {parlayMode&&!isAdmin&&tab==="bet"&&(()=>{
         const viewedParlay=viewingParlayId?bets.find(b=>b.id===viewingParlayId):null;
         const viewMult=viewedParlay&&viewedParlay.stake>0?((viewedParlay.stake+(viewedParlay.potential_win||0))/viewedParlay.stake).toFixed(2):"—";
         const wonL=viewedParlay?.legs?.filter(l=>l._outcome==="won").length||0;
@@ -2636,13 +2687,13 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                 {isParlay&&(
                   <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:10,color:C.dim}}>
                     <span>Multiplier: <strong style={{color:"#A855F7"}}>{mult}x</strong></span>
-                    {bet.status==="lost"&&lostLegs>0&&<span style={{color:"#FF5252"}}>Lost on leg {wonLegs+1} of {totalLegs}</span>}
+                    {bet.status==="lost"&&lostLegs>0&&<span style={{color:"#FF5252"}}>❌ {lostLegs} leg{lostLegs>1?"s":""} lost</span>}
                     {bet.status==="won"&&<span style={{color:C.green}}>All {totalLegs} legs hit! 🎉</span>}
                   </div>
                 )}
                 <div style={{display:"flex",gap:16,fontSize:12,color:C.dim,marginTop:8,paddingTop:8,borderTop:`1px solid ${C.border}`}}>
                   <span>Stake <strong style={{color:C.text}}>₿{bet.stake}</strong></span>
-                  <span>To win <strong style={{color:bet.status==="won"?C.green:C.green}}>₿{(bet.potential_win||0).toFixed(2)}</strong></span>
+                  <span>To win <strong style={{color:bet.status==="won"?(isParlay?"#A855F7":C.green):bet.status==="lost"?"#FF5252":C.gold}}>₿{(bet.potential_win||0).toFixed(2)}</strong></span>
                 </div>
               </div>
               );
@@ -3595,7 +3646,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         {TABS.map(t=>{
           const active=tab===t.id;
           return(
-            <button key={t.id} style={{flex:1,background:"none",border:"none",color:active?C.gold:C.dim,padding:"8px 4px 11px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative"}} onClick={()=>setTab(t.id)}>
+            <button key={t.id} style={{flex:1,background:"none",border:"none",color:active?C.gold:C.dim,padding:"8px 4px 11px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative"}} onClick={()=>{setTab(t.id);if(t.id!=="bet")setParlayConfirm(false);}}>
               {active&&<div style={{position:"absolute",top:0,left:"25%",width:"50%",height:2,background:C.gold,borderRadius:"0 0 2px 2px"}}/>}
               <span style={{fontSize:20}}>{t.icon}</span>
               <span style={{fontSize:8,fontWeight:700,letterSpacing:"0.02em"}}>{t.label}</span>
