@@ -1086,7 +1086,8 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       if(stake>freshUser.balance){showToast(`Balance changed — you only have ₿${freshUser.balance.toFixed(2)}`,"error");return;}
       await db.patchUser(session.userId,{balance:+(freshUser.balance-stake).toFixed(2)});
       const houseAcct=(await db.getHouse())?.[0];
-      if(houseAcct) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+stake).toFixed(2)});
+      // Test user bets: don't affect house balance at all (sandbox account)
+      if(houseAcct&&freshUser.username!==TEST_USER) await db.patchUser(houseAcct.id,{balance:+(houseAcct.balance+stake).toFixed(2)});
       const eventName=sport==="mlb"?"MLB 2026":"FIFA World Cup 2026";
       await db.addBet({user_id:session.userId,type:"single",stake,potential_win:win,
         legs:[{fighter:team,matchup,odds,fightId:gid,eventDate:g?.dt||null,event:eventName,sport:sport||"soccer"}]});
@@ -1271,9 +1272,10 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       // Deduct from player using fresh balance
       await db.patchUser(session.userId,{balance:+(freshUser.balance-stake).toFixed(2)});
       // Add stake to house — fetch fresh since players don't load house in state
+      // Test user bets: skip house update entirely (sandbox account)
       const freshHouseRes=await db.getHouse();
       const freshHouse=freshHouseRes?.[0];
-      if(freshHouse)await db.patchUser(freshHouse.id,{balance:+(freshHouse.balance+stake).toFixed(2)});
+      if(freshHouse&&freshUser.username!==TEST_USER)await db.patchUser(freshHouse.id,{balance:+(freshHouse.balance+stake).toFixed(2)});
       exitParlay();
       showToast(`🎰 Parlay placed! ₿${stake} to win ₿${potential_win}`);
       await load();
