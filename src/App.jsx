@@ -6,6 +6,10 @@ const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 const ADMIN_USER = "brent", ADMIN_PASS = "MFLadmin2026!";
 const TEST_USER = "test"; // test account — admin can reset to wipe transactions from P&L
 
+// ─── BUILD ID — change this string every time you push to GitHub ──────────────
+// Players will automatically see a "refresh to update" popup on their next visit
+const BUILD_ID = "2026-07-02-a";
+
 const sb = async (path, opts = {}) => {
   const { method = "GET", body, prefer = "return=representation" } = opts;
   const res = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
@@ -808,6 +812,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
   const [adminNotifs,setAdminNotifs]=useState([]); // settled bets house hasn't seen yet
   const [patchNotifs,setPatchNotifs]=useState([]); // unseen patch note entries
   const [giftNotifs,setGiftNotifs]=useState([]); // unseen received-gift transactions
+  const [showRefreshPopup,setShowRefreshPopup]=useState(false);
   const [patchNotesOpen,setPatchNotesOpen]=useState(false); // collapsible full history in Profile
   const [settleScores,setSettleScores]=useState({});
   const [lbOpen,setLbOpen]=useState(false);
@@ -986,6 +991,15 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
       const seenId=parseInt(localStorage.getItem("mfl_patch_seen")||"0",10);
       const unseen=PATCH_NOTES.filter(p=>p.id>seenId);
       if(unseen.length)setPatchNotifs(unseen);
+    }catch(e){}
+  },[]);
+
+  // Build ID: show "please refresh" popup when a new version has been deployed
+  useEffect(()=>{
+    try{
+      const saved=localStorage.getItem("mfl_build_id");
+      if(saved&&saved!==BUILD_ID) setShowRefreshPopup(true);
+      else localStorage.setItem("mfl_build_id",BUILD_ID);
     }catch(e){}
   },[]);
   const dismissPatchNotifs=()=>{
@@ -1601,6 +1615,23 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
         );
       })()}
 
+      {/* NEW VERSION POPUP — shown when BUILD_ID changes after a GitHub deploy */}
+      {showRefreshPopup&&(
+        <div style={S.over}>
+          <div style={{...S.modal,textAlign:"center"}}>
+            <div style={{fontSize:40,marginBottom:10}}>🔄</div>
+            <div style={{fontSize:18,fontWeight:900,color:C.text,marginBottom:8}}>Update Available</div>
+            <div style={{fontSize:13,color:C.sub,marginBottom:20,lineHeight:1.6}}>
+              MFL Betzone just got updated.<br/>Refresh to get the latest version.
+            </div>
+            <button style={{...S.btn,width:"100%",padding:"15px",fontSize:15}} onClick={()=>{
+              try{localStorage.setItem("mfl_build_id",BUILD_ID);}catch{}
+              window.location.reload(true);
+            }}>Refresh Now</button>
+          </div>
+        </div>
+      )}
+
       <header style={S.hdr}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 16px 10px"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1811,24 +1842,26 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     const myFighter=myGameBets[0]?.legs?.[0]?.fighter;
                     const myBetOdds=myGameBets[0]?.legs?.[0]?.odds;
                     const isMine=t=>!pick&&myFighter===t;
-                    // Show player's locked bet-time odds on their pick — not live odds
                     const dispO=(team,liveOdds)=>isMine(team)&&myBetOdds!=null?myBetOdds:liveOdds;
+                    // Admin: highlight winning team green after final whistle
+                    const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.score.away>g.score.home?g.t2:"Draw"):null;
+                    const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
                     return(
                   <div style={{display:"flex",gap:5}}>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(winner===g.t1?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t1&&isAdmin?"✓":"✅"}</span>}
                       <Flag team={g.t1} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:13,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),...(isMine("Draw")?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {isMine("Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,"Draw",g.oDraw)} style={{...S.fBtn,flex:0.72,...(pick?.team==="Draw"?{...S.fBtnOn,background:"#151525"}:{}),...(isMine("Draw")?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(winner==="Draw"?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {(isMine("Draw")||winner==="Draw")&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner==="Draw"&&isAdmin?"✓":"✅"}</span>}
                       <span style={{fontSize:17}}>⚖️</span>
                       <span style={{fontSize:10,fontWeight:700,color:C.dim}}>DRAW</span>
                       <span style={{fontSize:13,fontWeight:900,color:C.sub}}>{fmtO(dispO("Draw",g.oDraw))}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(winner===g.t2?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t2&&isAdmin?"✓":"✅"}</span>}
                       <Flag team={g.t2} size={26}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:13,fontWeight:900,color:dispO(g.t2,g.o2)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t2,g.o2))}</span>
@@ -1892,7 +1925,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {/* Reactions + Chat */}
-                  {!isAdmin&&(()=>{
+                  {(()=>{
                     const gameReactions=allReactions.filter(r=>r.game_id===g.id);
                     const gameChat=allChat.filter(c=>c.game_id===g.id);
                     const isChatOpen=chatOpen[g.id];
@@ -2118,16 +2151,19 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                     const myBetOdds=myGameBets[0]?.legs?.[0]?.odds;
                     const isMine=t=>!pick&&myFighter===t;
                     const dispO=(team,liveOdds)=>isMine(team)&&myBetOdds!=null?myBetOdds:liveOdds;
+                    // Admin: highlight winning team green after final
+                    const winner=isAdmin&&isFinal&&g.score!=null?(g.score.home>g.score.away?g.t1:g.t2):null;
+                    const winStyle={border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 12px ${C.green}22`};
                     return(
                   <div style={{display:"flex",gap:8}}>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {isMine(g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t1,g.o1)} style={{...S.fBtn,flex:1,...(pick?.team===g.t1?S.fBtnOn:{}),...(isMine(g.t1)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(winner===g.t1?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {(isMine(g.t1)||winner===g.t1)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t1&&isAdmin?"✓":"✅"}</span>}
                       <MLBLogo abbr={g.abbr1} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t1}</span>
                       <span style={{fontSize:14,fontWeight:900,color:dispO(g.t1,g.o1)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t1,g.o1))}</span>
                     </button>
-                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
-                      {isMine(g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>✅</span>}
+                    <button disabled={isAdmin||closed||isLive} onClick={()=>setPick(g.id,g.t2,g.o2)} style={{...S.fBtn,flex:1,...(pick?.team===g.t2?S.fBtnOn:{}),...(isMine(g.t2)?{border:`1px solid ${C.green}`,background:"#0A1A0A",boxShadow:`0 0 10px ${C.green}1A`}:{}),...(winner===g.t2?winStyle:{}),cursor:isAdmin||closed||isLive?"not-allowed":"pointer",position:"relative"}}>
+                      {(isMine(g.t2)||winner===g.t2)&&<span style={{position:"absolute",top:4,right:4,fontSize:13}}>{winner===g.t2&&isAdmin?"✓":"✅"}</span>}
                       <MLBLogo abbr={g.abbr2} size={30}/>
                       <span style={{fontSize:11,fontWeight:700,color:C.text,textAlign:"center",lineHeight:1.2}}>{g.t2}</span>
                       <span style={{fontSize:14,fontWeight:900,color:dispO(g.t2,g.o2)<0?"#FF6B35":C.green}}>{fmtO(dispO(g.t2,g.o2))}</span>
@@ -2190,7 +2226,7 @@ function Main({session,logout,showToast,toast,wc,wcLoading,mlb,mlbLoading}){
                   {isLive&&<div style={{fontSize:10,color:C.dim,textAlign:"center",marginTop:6,opacity:0.6}}>pre-game odds · not live</div>}
 
                   {/* Reactions + Chat */}
-                  {!isAdmin&&(()=>{
+                  {(()=>{
                     const gameReactions=allReactions.filter(r=>r.game_id===g.id);
                     const gameChat=allChat.filter(c=>c.game_id===g.id);
                     const isChatOpen=chatOpen[g.id];
